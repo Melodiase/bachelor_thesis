@@ -1,0 +1,11 @@
+# PyTorch and related libraries from conda channels
+torch
+torchvision
+torchaudio
+pytorch-cuda=12.4
+
+# PyTorch Geometric
+torch-geometric
+
+# PythonOCC wrapper
+occwl
