@@ -5,7 +5,8 @@ from OCC.Display.WebGl.jupyter_renderer import JupyterRenderer
 
 from occwl.io import load_step
 
-from .brepnet_entity_mapper import EntityMapper
+from bachelor_thesis.viewer.brepnet_entity_mapper import EntityMapper
+
 
 class ColorMap:
     def __init__(self):

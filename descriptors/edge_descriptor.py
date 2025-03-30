@@ -1,13 +1,18 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import List
 
+class EdgeConvexity(Enum):
+    CONCAVE = 1
+    CONVEX = 2
+    SMOOTH = 3
+
 @dataclass
-class EdgeDescriptor:
+class EdgeAttributes:
     """
     Stores edge (b_edge) feature information, as in Table 2 of the paper.
 
-    curve_type : Unknown, B-spline, Bezier curve, trimmed curve, bounded curve, circle, ellipse,
-      hyperbola, parabola, conic, line, offset curve, extended_complex curve, any 
+    curve_type <- see mappings.py
     
     distance: If parallel is true, this attribute can have value.   
 

@@ -1,15 +1,14 @@
 import pathlib
-import json
 import re
 from occwl.edge import Edge
 from occwl.face import Face
-from occwl.solid import Solid
 from occwl.vertex import Vertex
 from occwl.viewer import Viewer
 from occwl.compound import Compound
 
+from mappings import INITIAL_MACHINING_FEATUTES_DICT
+
 STEP_FILE = "C:/Users/synkh/BachelorThesis/original_datasets/MFCAD++_dataset/step/val/1154.step"
-MACHINING_FEATURE_FILE = "C:/Users/synkh/BachelorThesis/bachelor_thesis/machining_features.json"
 
 v = Viewer(backend="wx")
 
@@ -52,9 +51,9 @@ def extract_feature_labels(step_file):
     Returns a list of feature labels in the order they appear.
     """
     feature_labels = []
-
     with open(step_file, "r") as file:
         for line in file:
+            # Look for lines describing an ADVANCED_FACE('some_number',...
             match = re.match(r"#\d+ = ADVANCED_FACE\('(\d+)',", line)
             if match:
                 feature_labels.append(match.group(1))  # Store feature label
@@ -65,8 +64,7 @@ def extract_feature_labels(step_file):
 feature_labels = extract_feature_labels(STEP_FILE)
 
 # ✅ Step 2: Load Machining Feature Names
-with open(MACHINING_FEATURE_FILE, "r") as f:
-    machining_features = json.load(f)
+machining_features = INITIAL_MACHINING_FEATUTES_DICT
 
 # ✅ Step 3: Match Faces in OCC Model with Feature Labels
 faces = list(solid.faces())
@@ -79,6 +77,9 @@ face_label_map = {
     face: feature_labels[i] if i < len(feature_labels) else "?"
     for i, face in enumerate(faces)
 }
+
+# Create an index map so we can quickly retrieve the face index
+face_index_map = {face: i for i, face in enumerate(faces)}
 
 # ✅ Step 4: Display Face Information on Selection
 tooltip = None
@@ -110,8 +111,13 @@ def callback(selected_shapes, x, y):
         # Match feature label with machining feature name
         machining_feature_name = machining_features.get(feature_label, "Unknown")
 
-        # Display the tooltip with surface type, feature number, and machining feature
-        tooltip_text = f"{face_type} {feature_label} - {machining_feature_name}"
+        # Retrieve face index
+        face_index = face_index_map.get(entity, -1)
+
+        # Display the tooltip with surface type, face index, feature label, and machining feature
+        tooltip_text = (
+            f"Face {face_index}: {face_type} {feature_label} - {machining_feature_name}"
+        )
         tooltip = v.display_text(pt, tooltip_text, height=30)
 
     elif isinstance(entity, Edge):

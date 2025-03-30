@@ -1,285 +1,110 @@
 # my_brep_to_graph/feature_extractor/feature_extractor.py
 
+from collections import defaultdict
 from typing import List
 import math
 import numpy as np
+import warnings
+
+from occwl.geometry.geom_utils import to_numpy
+from occwl.edge_data_extractor import EdgeDataExtractor
 
 from occwl.face import Face
 from occwl.edge import Edge
-from descriptors.face_descriptor import FaceDescriptor
-from descriptors.edge_descriptor import EdgeDescriptor
+from occwl.solid import Solid
+from occwl.shape import Shape
+from occwl.compound import Compound
 
+from descriptors.face_descriptor import FaceAttributes
+from descriptors.edge_descriptor import EdgeConvexity, EdgeAttributes
 
+from OCC.Core.BRep import BRep_Tool, BRep_Tool_Surface
+from OCC.Core.TopoDS import topods_Face, topods_Edge
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.Geom import Geom_RectangularTrimmedSurface
+from OCC.Core.BRepTools import breptools_UVBounds
 
+from mappings import SURFACE_TYPE_MAPPING, CURVE_TYPE_MAPPING
+
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+from OCC.Core.BRepFill import BRepFill_Filling
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCC.Core.BRepTopAdaptor import BRepTopAdaptor_FClass2d
+from OCC.Core.GeomAbs import (GeomAbs_BezierSurface, GeomAbs_BSplineSurface,
+                              GeomAbs_C0, GeomAbs_C1, GeomAbs_C2, GeomAbs_C3,
+                              GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_G1,
+                              GeomAbs_G2, GeomAbs_OffsetSurface,
+                              GeomAbs_OtherSurface, GeomAbs_Plane,
+                              GeomAbs_Sphere, GeomAbs_SurfaceOfExtrusion,
+                              GeomAbs_SurfaceOfRevolution, GeomAbs_Torus)
+from OCC.Core.Geom import (
+    Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface,
+    Geom_SphericalSurface, Geom_ToroidalSurface, Geom_BSplineSurface
+)
+from OCC.Core.Geom import (
+    Geom_TrimmedCurve, Geom_BoundedCurve, Geom_Conic
+)
+from OCC.Core.GeomLProp import GeomLProp_SLProps
+from OCC.Core.gp import gp_Dir, gp_Pnt, gp_Pnt2d, gp_TrsfForm
+from OCC.Core.ShapeAnalysis import ShapeAnalysis_Surface
+from OCC.Core.TopAbs import TopAbs_IN, TopAbs_REVERSED, TopAbs_FORWARD
+from OCC.Core.TopAbs import TopAbs_INTERNAL, TopAbs_EXTERNAL
+from OCC.Core.TopLoc import TopLoc_Location
+from OCC.Core.TopoDS import TopoDS_Face
+
+from occwl.base import BoundingBoxMixin, TriangulatorMixin, WireContainerMixin, \
+    EdgeContainerMixin, VertexContainerMixin, SurfacePropertiesMixin
+
+import occwl.geometry.geom_utils as geom_utils
+import occwl.geometry.interval as Interval
+from occwl.geometry.box import Box
+
+from extractors.face_extractor import FaceExtractor
+from extractors.edge_extractor import EdgeExtractor
 
 class FeatureExtractor:
     """
-    Extracts feature descriptors for faces and edges.
+    Main extractor class that combines face and edge feature extraction.
+    
+    This class acts as a facade to the specialized extractors, providing
+    a simple interface to get face and edge descriptors.
     """
 
-    def get_face_descriptor(self, face: Face) -> FaceDescriptor:
+    def __init__(self, solid: Solid):
+        self.solid = solid
+        
+        # Initialize specialized extractors
+        self.face_extractor = FaceExtractor(solid)
+        self.edge_extractor = EdgeExtractor(solid)
+
+
+    def get_face_descriptor(self, face: Face) -> FaceAttributes:
         """
         Create a FaceDescriptor from an OCCWL Face.
+        
+        Args:
+            face: The OCCWL Face to extract features from
+            
+        Returns:
+            A complete FaceDescriptor object
         """
-        surface_type_id = self._classify_surface_type(face)
-        area = face.area()
-        normal = face.normal()
-        normal_list = [normal.X(), normal.Y(), normal.Z()]
-
-        # For bounding box ratio in parametric domain, placeholder
-        bounding_box_ratio = self._compute_uv_bounding_box_ratio(face)
-
-        # Outer/inner loops - placeholders for demonstration
-        outer_loop_adj = [0.0]*33
-        outer_loop_c0  = [0.0]*11
-        outer_loop_perp= [0.0]*11
-        inner_loop_info= [0.0, 0.0]
-
-        return FaceDescriptor(
-            surface_type=surface_type_id,
-            surface_area=area,
-            surface_normal=normal_list,
-            bounding_box_ratio=bounding_box_ratio,
-            outer_loop_adj_faces=outer_loop_adj,
-            outer_loop_c0_continuity=outer_loop_c0,
-            outer_loop_perpendicular=outer_loop_perp,
-            inner_loop=inner_loop_info
-        )
+        return self.face_extractor.get_face_descriptor(face)
 
 
     def get_edge_descriptor(self, edge: Edge, 
-                            face1: Face = None, 
-                            face2: Face = None) -> EdgeDescriptor:
+                           face1: Face = None, 
+                           face2: Face = None,
+                           angle_tol_rads: float = 0.1) -> EdgeAttributes:
         """
         Create an EdgeDescriptor from an OCCWL Edge.
-        If `face1` and `face2` are provided, we can compute convexity, parallel, etc.
-        """
-        curve_type_id = self._classify_curve_type(edge)
-        length = edge.curve_length() or 0.0
-
-        # For convexity, we need face1, face2 normals
-        is_convex = False
-        if face1 and face2:
-            is_convex = self._compute_convexity(face1, face2, edge)
-
-        # For perpendicular, parallel, and distance:
-        is_perp = False
-        is_parallel = False
-        distance = 0.0
-        if face1 and face2:
-            is_perp      = self._check_perpendicular(face1, face2)
-            is_parallel  = self._check_parallel(face1, face2)
-            if is_parallel:
-                distance = self._compute_parallel_distance(face1, face2)
-
-        return EdgeDescriptor(
-            curve_type=curve_type_id,
-            curve_length=length,
-            convexity=is_convex,
-            perpendicular=is_perp,
-            parallel=is_parallel,
-            distance=distance
-        )
-
-
-    # ------------------------
-    # Internal helper methods
-    # ------------------------
-
-    ################
-    # FACES
-    #####################
-
-    def classify_surface_type(self, face: Face) -> int:
-        """
-        Classify the Face's surface into an integer ID based on Table 1.
-
-        Mapped as follows (0-based):
-            0 = Unknown
-            1 = Bezier surface
-            2 = B-spline surface
-            3 = Rectangular trimmed surface (no implementation)
-            4 = Conical surface
-            5 = Cylindrical surface
-            6 = Plane
-            7 = Spherical surface
-            8 = Toroidal surface
-            9 = Surface of linear extrusion
-            10 = Surface of revolution
-            11 = Any (generic fallback)
-
+        
         Args:
-            face (occwl.face.Face): The occwl Face object to classify.
+            edge: The OCCWL Edge to extract features from
+            face1: First adjacent face (optional)
+            face2: Second adjacent face (optional)
+            angle_tol_rads: Tolerance for angle calculations
+            
         Returns:
-            int: An integer identifier (0..11).
+            A complete EdgeDescriptor object
         """
-
-        return face.surface_type()
-
-    '''
-        surf = face.surface()
-
-        if surf.is_plane(): 
-            print ("Yo")
-            return 6  # Plane ✅ (Checked in OCCWL)
-        if surf.is_cylinder(): return 5  # Cylinder ✅ (Checked in OCCWL)
-        if surf.is_cone(): return 4  # Cone ✅ (Checked in OCCWL)
-        if surf.is_sphere(): return 7  # Sphere ✅ (Checked in OCCWL)
-        if surf.is_torus(): return 8  # Torus ✅ (Checked in OCCWL)
-        if surf.is_bezier(): return 1  # Bezier Surface ✅ (Checked in OCCWL)
-        if surf.is_bspline(): return 2  # B-spline Surface ✅ (Checked in OCCWL)
-
-        # TODO: Implement checks for Rectangular Trimmed Surface, Extrusion, and Revolution
-
-        return 11  # Fallback: "Any" or "Unknown"'''
-    
-
-
-
-    def _compute_uv_bounding_box_ratio(self, face: Face) -> float:
-        """
-        Compute the bounding box aspect ratio in the UV parameter space.
-        In practice, use face.uv_bounds() if available, or approximate in 3D.
-        """
-        try:
-            u_min, u_max, v_min, v_max = face.uv_bounds()
-            u_length = abs(u_max - u_min)
-            v_length = abs(v_max - v_min)
-            return min(u_length, v_length) / max(u_length, v_length) if max(u_length, v_length) > 0 else 1.0
-        except:
-            return 1.0  # Default ratio
-
-    def _compute_outer_loop_adj_faces(self, face: Face) -> List[float]:
-        """
-        Computes the adjacency ratio for different surface types × convexity.
-        """
-        # TODO: Implement adjacency queries
-        return [0.0] * 33  # Placeholder
-
-    def _compute_outer_loop_c0_continuity(self, face: Face) -> List[float]:
-        """
-        Computes the ratio of adjacent faces with C0 continuity.
-        """
-        # TODO: Implement continuity check
-        return [0.0] * 11  # Placeholder
-
-    def _compute_outer_loop_perpendicular(self, face: Face) -> List[float]:
-        """
-        Computes the ratio of adjacent faces that are perpendicular.
-        """
-        # TODO: Implement perpendicularity check
-        return [0.0] * 11  # Placeholder
-
-    def _compute_inner_loop(self, face: Face) -> List[float]:
-        """
-        Extracts the location and convexity of the inner loop (if any).
-        """
-        # TODO: Implement inner loop detection
-        return [0.0, 0.0]  # Placeholder
-
-
-    ################
-    # EDGES
-    #####################
-    
-
-    def _classify_curve_type(self, edge: Edge) -> int:
-        """
-        Return an integer representing the curve type.
-            0 = Unknown
-            1 = B-spline
-            5 = Circle
-            9 = Line
-            etc.
-        """
-        crv = edge.curve()
-        if crv is None:
-            return 0
-        if crv.is_line():
-            return 9
-        elif crv.is_circle():
-            return 5
-        elif crv.is_bspline():
-            return 1
-        # etc.
-        return 0
-
-
-    def _compute_convexity(self, face1: Face, face2: Face, edge: Edge) -> bool:
-        """
-        Example approach to compute convex/concave using face normals
-        and the edge direction, as per the paper.
-        """
-        # Simplified logic just for illustration:
-        normal1 = face1.normal()
-        normal2 = face2.normal()
-        # Paper’s approach involves cross/dot products with the edge direction
-        # We'll do something minimal:
-        dot_value = normal1.Dot(normal2)
-        # If dot_value < 0 => concave, else convex (very rough heuristic)
-        return dot_value >= 0
-    
-
-    def _check_perpendicular(self, face1: Face, face2: Face) -> bool:
-        n1 = face1.normal()
-        n2 = face2.normal()
-        dot_val = abs(n1.Dot(n2))
-        # If nearly 0 => perpendicular
-        return dot_val < 1e-4
-
-
-    def _check_parallel(self, face1: Face, face2: Face) -> bool:
-        n1 = face1.normal()
-        n2 = face2.normal()
-        # Norm dot close to ±1 => parallel
-        dot_val = abs(n1.Dot(n2))
-        return abs(dot_val - 1.0) < 1e-4
-    
-
-    def _compute_parallel_distance(self, face1: Face, face2: Face) -> float:
-        """
-        If two faces are parallel, compute distance between them.
-        In practice, you'd pick a point on face1 and face2 and measure 
-        the distance along the normal.  This is a placeholder.
-        """
-        # E.g., find an average point on face1, project it onto face2, measure distance, etc.
-        return 20.0  # example value
-
-import pathlib
-import json
-import re
-from occwl.edge import Edge
-from occwl.face import Face
-from occwl.solid import Solid
-from occwl.vertex import Vertex
-from occwl.viewer import Viewer
-from occwl.compound import Compound
-
-
-def _compute_surface_normal(self, face: Face) -> List[float]:
-    """
-    Compute the normal of the surface at the center of its UV domain.
-    """
-    uv_center = face.uv_bounds().center()
-    normal = face.normal(uv_center)
-    return normal.tolist()
-
-if __name__ == "__main__":
-    STEP_FILE = "C:/Users/synkh/BachelorThesis/original_datasets/MFCAD++_dataset/step/val/1154.step"
-    compound = Compound.load_from_step(pathlib.Path(__file__).resolve().parent.joinpath(STEP_FILE))
-    solid = next(compound.solids())
-    faces = list(solid.faces())
-    print(faces)
-
-    feature_extractor = FeatureExtractor()
-    for i in range(0, len(faces)):
-        feature_type = feature_extractor.classify_surface_type(faces[i])
-        print(i, " Surface type:", feature_type)
-
-    face = faces[6]
-    print(" Surface type:", feature_extractor.classify_surface_type(face), " with area = ", face.area())
-    face = faces[8]
-    print(8, " Surface type:", feature_extractor.classify_surface_type(faces[8]), " with area = ", faces[8].area())
-    face = faces[34]
-    print(34, " Surface type:", feature_extractor.classify_surface_type(faces[34]), " with area = ", faces[34].area())
-    
+        return self.edge_extractor.get_edge_descriptor(edge, face1, face2, angle_tol_rads)
