@@ -1,27 +1,17 @@
 # my_brep_to_graph/converter/brep_converter.py
-
-import sys
-import pathlib
 import networkx as nx
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from typing import List, Union, Optional, Dict, Any, Tuple
 
 # OCCWL imports
-from occwl.io import load_step
-from occwl.shape import Shape
-from occwl.face import Face
-from occwl.edge import Edge
 from occwl.entity_mapper import EntityMapper
 from occwl.compound import Compound
 from occwl.solid import Solid
 from occwl.shell import Shell
 
-# Custom imports
-from feature_extractor import FeatureExtractor
-from descriptors.face_descriptor import FaceAttributes
-from descriptors.edge_descriptor import EdgeConvexity, EdgeAttributes
-from mappings import SURFACE_TYPE_MAPPING, CURVE_TYPE_MAPPING
+
+from bachelor_thesis.mappings import SURFACE_TYPE_MAPPING, CURVE_TYPE_MAPPING
 
 # Type definition for shape types
 ShapeType = Union[Shell, Solid, Compound]

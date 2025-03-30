@@ -6,8 +6,8 @@ from occwl.face import Face
 from occwl.edge import Edge
 from occwl.solid import Solid
 
-from descriptors.face_descriptor import FaceAttributes
-from mappings import SURFACE_TYPE_MAPPING
+from bachelor_thesis.descriptors.face_attributes import FaceAttributes
+from bachelor_thesis.mappings import SURFACE_TYPE_MAPPING
 
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.TopoDS import topods_Face

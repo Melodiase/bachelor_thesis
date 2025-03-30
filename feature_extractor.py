@@ -15,8 +15,8 @@ from occwl.solid import Solid
 from occwl.shape import Shape
 from occwl.compound import Compound
 
-from descriptors.face_descriptor import FaceAttributes
-from descriptors.edge_descriptor import EdgeConvexity, EdgeAttributes
+from bachelor_thesis.descriptors.face_attributes import FaceAttributes
+from bachelor_thesis.descriptors.edge_attributes import EdgeConvexity, EdgeAttributes
 
 from OCC.Core.BRep import BRep_Tool, BRep_Tool_Surface
 from OCC.Core.TopoDS import topods_Face, topods_Edge
@@ -24,7 +24,7 @@ from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.Geom import Geom_RectangularTrimmedSurface
 from OCC.Core.BRepTools import breptools_UVBounds
 
-from mappings import SURFACE_TYPE_MAPPING, CURVE_TYPE_MAPPING
+from bachelor_thesis.mappings import SURFACE_TYPE_MAPPING, CURVE_TYPE_MAPPING
 
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 from OCC.Core.BRepFill import BRepFill_Filling
@@ -59,8 +59,8 @@ import occwl.geometry.geom_utils as geom_utils
 import occwl.geometry.interval as Interval
 from occwl.geometry.box import Box
 
-from extractors.face_extractor import FaceExtractor
-from extractors.edge_extractor import EdgeExtractor
+from bachelor_thesis.extractors.face_extractor import FaceExtractor
+from bachelor_thesis.extractors.edge_extractor import EdgeExtractor
 
 class FeatureExtractor:
     """

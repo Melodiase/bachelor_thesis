@@ -5,8 +5,8 @@ from occwl.edge import Edge
 from occwl.face import Face
 from occwl.solid import Solid
 
-from descriptors.edge_descriptor import EdgeAttributes, EdgeConvexity
-from mappings import CURVE_TYPE_MAPPING
+from bachelor_thesis.descriptors.edge_attributes import EdgeAttributes, EdgeConvexity
+from bachelor_thesis.mappings import CURVE_TYPE_MAPPING
 
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.TopoDS import topods_Edge
