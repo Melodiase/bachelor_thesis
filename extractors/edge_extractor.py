@@ -5,8 +5,9 @@ from occwl.edge import Edge
 from occwl.face import Face
 from occwl.solid import Solid
 
-from bachelor_thesis.descriptors.edge_attributes import EdgeAttributes, EdgeConvexity
-from bachelor_thesis.mappings import CURVE_TYPE_MAPPING
+from descriptors.edge_attributes import EdgeAttributes, EdgeConvexity
+from mappings import CURVE_TYPE_MAPPING
+from extractors.face_extractor import FaceExtractor
 
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.TopoDS import topods_Edge
@@ -61,7 +62,6 @@ class EdgeExtractor:
             
             # Check for perpendicular and parallel faces
             # Get normal vectors
-            from extractors.face_extractor import FaceExtractor
             face_extractor = FaceExtractor(self.solid)
             normal1 = np.array(face_extractor.compute_surface_normal(face1))
             normal2 = np.array(face_extractor.compute_surface_normal(face2))

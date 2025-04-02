@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
-from bachelor_thesis.mappings import SURFACE_TYPE_MAPPING
+from mappings import SURFACE_TYPE_MAPPING
 
 
 @dataclass # node in graph
