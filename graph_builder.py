@@ -17,8 +17,8 @@ def brepgat_face_adjacency(
     feature_extractor,
     add_parallel: bool = False,
     self_loops: bool = False,
-    face_descriptors: Optional[List[Dict]] = None,
-    edge_descriptors: Optional[Dict[Tuple[int, int], Dict]] = None
+    face_attributes: Optional[List[Dict]] = None,
+    edge_attributes: Optional[Dict[Tuple[int, int], Dict]] = None
 ) -> nx.DiGraph:
     """
     Build a face-level graph storing node and edge descriptors as in BRepGAT.
@@ -41,10 +41,10 @@ def brepgat_face_adjacency(
 
     for i, face in enumerate(all_faces):
         face_idx = mapper.face_index(face)
-        descriptor = face_descriptors[i] if face_descriptors else feature_extractor.get_face_descriptor(face).to_dict()
-        graph.add_node(face_idx, face_descriptor=descriptor)
+        attrs = face_attributes[i] if face_attributes else feature_extractor.get_face_descriptor(face).to_dict()
+        graph.add_node(face_idx, face_attributes=attrs)
 
-    _add_topological_edges_to_graph(graph, shape, mapper, feature_extractor, all_faces, self_loops, edge_descriptors)
+    _add_topological_edges_to_graph(graph, shape, mapper, feature_extractor, all_faces, self_loops, edge_attributes)
 
     if add_parallel:
         _add_parallel_edges_to_graph(graph, all_faces, feature_extractor)
@@ -59,7 +59,7 @@ def _add_topological_edges_to_graph(
     feature_extractor,
     all_faces: list,
     self_loops: bool,
-    edge_descriptors: Optional[Dict[Tuple[int, int], Dict]]
+    edge_attributes: Optional[Dict[Tuple[int, int], Dict]]
 ):
     added_edges = set()
     for edge in shape.edges():
@@ -75,11 +75,11 @@ def _add_topological_edges_to_graph(
             f = connected_faces[0]
             idx = mapper.face_index(f)
             key = (idx, idx)
-            edesc = edge_descriptors.get(key) if edge_descriptors and key in edge_descriptors else \
+            eattrs = edge_attributes.get(key) if edge_attributes and key in edge_attributes else \
                 feature_extractor.get_edge_descriptor(edge, f, f).to_dict()
             edge_key = (idx, idx, edge.__hash__())
             if edge_key not in added_edges:
-                graph.add_edge(idx, idx, edge_descriptor=edesc)
+                graph.add_edge(idx, idx, edge_attributes=eattrs)
                 added_edges.add(edge_key)
 
         # Standard edge between two faces
@@ -93,9 +93,9 @@ def _add_topological_edges_to_graph(
             k12 = (i1, i2)
             key12 = (i1, i2, edge.__hash__())
             if key12 not in added_edges:
-                edesc12 = edge_descriptors.get(k12) if edge_descriptors and k12 in edge_descriptors else \
+                eattrs12 = edge_attributes.get(k12) if edge_attributes and k12 in edge_attributes else \
                     feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
-                graph.add_edge(i1, i2, edge_descriptor=edesc12)
+                graph.add_edge(i1, i2, edge_attributes=eattrs12)
                 added_edges.add(key12)
 
             # Reverse
@@ -103,9 +103,9 @@ def _add_topological_edges_to_graph(
             k21 = (i2, i1)
             key21 = (i2, i1, edge_rev.__hash__())
             if key21 not in added_edges:
-                edesc21 = edge_descriptors.get(k21) if edge_descriptors and k21 in edge_descriptors else \
+                eattrs21 = edge_attributes.get(k21) if edge_attributes and k21 in edge_attributes else \
                     feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
-                graph.add_edge(i2, i1, edge_descriptor=edesc21)
+                graph.add_edge(i2, i1, edge_attributes=eattrs21)
                 added_edges.add(key21)
 
         elif len(connected_faces) > 2:
@@ -124,8 +124,8 @@ def analyze_graph(graph: nx.DiGraph):
     from collections import defaultdict
     edge_types = defaultdict(int)
     for _, _, data in graph.edges(data=True):
-        if 'edge_descriptor' in data:
-            etype = data['edge_descriptor'].get("curve_type", -1)
+        if 'edge_attributes' in data:
+            etype = data['edge_attributes'].get("curve_type", -1)
             edge_types[etype] += 1
 
     if edge_types:
