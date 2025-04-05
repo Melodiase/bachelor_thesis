@@ -16,7 +16,7 @@ class FaceAttributes:
     `surface_area`: Float (total face area).
     `surface_normal`: Float[3] ([x, y, z] unit vector).
     `bounding_box_ratio`: Float (width/height ratio).
-    `outer_loop_adj_faces`: Float[33] (surface type × convexity).
+    `outer_loop_adj_faces`: Float[33] (surface type x convexity).
     `outer_loop_c0_continuity`: Float[11] (C0 continuity by surface type).
     `outer_loop_perpendicular`: Float[11] (perpendicularity by surface type).
     `inner_loop`: Float[2] ([location, convexity]).
