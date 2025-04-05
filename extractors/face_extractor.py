@@ -52,15 +52,11 @@ class FaceExtractor:
         outer_wire, inner_wires = self.identify_outer_and_inner_wires(face)
         
         # Process outer loop properties as per paper:
-        #   (i) Ratio of adjacent faces per (surface type, convexity) pair (33 bins)
-        #   (ii) Ratio of adjacent faces with C0 continuity per surface type
-        #   (iii) Ratio of adjacent faces that are perpendicular per surface type
         outer_loop_adj = self.compute_face_adj_type_convexity(face)
         outer_loop_c0 = self.compute_outer_loop_c0_continuity(face, outer_wire)
         outer_loop_perp = self.compute_outer_loop_perpendicular(face, outer_wire)
         
         # Process inner loop properties as per paper:
-        # Store the "location type" and "convexity" of the inner loop.
         inner_loop_info = self.compute_inner_loop_info(face, inner_wires)
         
         return FaceAttributes(
@@ -75,15 +71,6 @@ class FaceExtractor:
         )
 
     def identify_outer_and_inner_wires(self, face: Face) -> Tuple[Wire, List[Wire]]:
-        """
-        Correctly identify the outer wire (boundary) and inner wires (holes) of a face.
-        
-        Args:
-            face: The OCCWL face to analyze
-            
-        Returns:
-            Tuple containing (outer_wire, list_of_inner_wires)
-        """
         wires = list(face.wires())
         
         if len(wires) == 1:
@@ -374,6 +361,8 @@ class FaceExtractor:
         """
         For a given face, compute a 33-length array describing adjacency counts per 
         (surface_type, convexity) pair across all edges.
+        In addition, if the normals computed at the face centers of the two adjacent faces are nearly parallel,
+        re-compute the normals at the centroid of the shared edge.
         
         Returns:
             List[float]: Array of adjacency ratios by (surface_type, convexity) pairs.
@@ -393,18 +382,55 @@ class FaceExtractor:
                 st_idx = self.classify_surface_type(adj_face)
                 if st_idx < 0 or st_idx >= NUM_SURFACE_TYPES:
                     st_idx = 0
-                from occwl.edge_data_extractor import EdgeDataExtractor, EdgeConvexity
-                extractor = EdgeDataExtractor(edge, [face, adj_face])
-                conv_idx = 0  # Default SMOOTH/UNKNOWN
-                if extractor.good:
-                    ctype = extractor.edge_convexity(angle_tol_rads)
-                    if ctype == EdgeConvexity.CONVEX:
-                        conv_idx = 1
-                    elif ctype == EdgeConvexity.CONCAVE:
-                        conv_idx = 2
-                # If extractor.good is False, we keep the default conv_idx = 0
+                # Check if face centers provide nearly parallel normals.
+                center_uv_face = face.uv_bounds().center()
+                center_uv_adj = adj_face.uv_bounds().center()
+                normal_face_center = np.array(face.normal(center_uv_face))
+                normal_adj_center = np.array(adj_face.normal(center_uv_adj))
+                if angle_between(normal_face_center, normal_adj_center) < 0.1:
+                    # Compute centroid of the shared edge.
+                    vertices = list(edge.ordered_vertices())
+                    if vertices:
+                        pts = np.array([v.point() for v in vertices])
+                        centroid = np.mean(pts, axis=0)
+                        # Reproject centroid onto each face to get UV parameters.
+                        uv_face = face.point_to_parameter(centroid)
+                        uv_adj = adj_face.point_to_parameter(centroid)
+                        n_face = np.array(face.normal(uv_face))
+                        n_adj = np.array(adj_face.normal(uv_adj))
+                    else:
+                        n_face = normal_face_center
+                        n_adj = normal_adj_center
+                else:
+                    # Use the edge_data_extractor from occwl.
+                    from occwl.edge_data_extractor import EdgeDataExtractor, EdgeConvexity
+                    extractor = EdgeDataExtractor(edge, [face, adj_face])
+                    if extractor.good:
+                        ctype = extractor.edge_convexity(angle_tol_rads)
+                        if ctype == EdgeConvexity.CONVEX:
+                            conv_idx = 1
+                        elif ctype == EdgeConvexity.CONCAVE:
+                            conv_idx = 2
+                        else:
+                            conv_idx = 0
+                        bin_index = st_idx * NUM_CONVEXITY_STATES + conv_idx
+                        adjacency_bins[bin_index] += 1.0
+                        continue  # Process next adjacent face
+                    else:
+                        n_face = normal_face_center
+                        n_adj = normal_adj_center
+                
+                # When using re-computed normals at the edge centroid:
+                # Determine convexity manually.
+                # Use the tangent at the midpoint of the edge parameter domain.
+                mid_u = (edge.u_bounds().a + edge.u_bounds().b) / 2.0
+                tangent = np.array(edge.tangent(mid_u))
+                cross_prod = np.cross(n_face, n_adj)
+                dot_val = np.dot(cross_prod, tangent)
+                conv_idx = 1 if dot_val > 0 else 2  # 1: Convex, 2: Concave
                 bin_index = st_idx * NUM_CONVEXITY_STATES + conv_idx
                 adjacency_bins[bin_index] += 1.0
+        
         if total_adjacencies > 0:
             adjacency_bins = [count / total_adjacencies for count in adjacency_bins]
         return adjacency_bins
