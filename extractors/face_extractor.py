@@ -395,12 +395,14 @@ class FaceExtractor:
                     st_idx = 0
                 from occwl.edge_data_extractor import EdgeDataExtractor, EdgeConvexity
                 extractor = EdgeDataExtractor(edge, [face, adj_face])
-                ctype = extractor.edge_convexity(angle_tol_rads)
                 conv_idx = 0  # Default SMOOTH/UNKNOWN
-                if ctype == EdgeConvexity.CONVEX:
-                    conv_idx = 1
-                elif ctype == EdgeConvexity.CONCAVE:
-                    conv_idx = 2
+                if extractor.good:
+                    ctype = extractor.edge_convexity(angle_tol_rads)
+                    if ctype == EdgeConvexity.CONVEX:
+                        conv_idx = 1
+                    elif ctype == EdgeConvexity.CONCAVE:
+                        conv_idx = 2
+                # If extractor.good is False, we keep the default conv_idx = 0
                 bin_index = st_idx * NUM_CONVEXITY_STATES + conv_idx
                 adjacency_bins[bin_index] += 1.0
         if total_adjacencies > 0:
