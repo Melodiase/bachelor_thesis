@@ -19,6 +19,21 @@ from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_FORWARD, TopAbs_INTERNAL, To
 from OCC.Core.BRepTopAdaptor import BRepTopAdaptor_FClass2d
 from OCC.Core.gp import gp_Pnt2d, gp_Pln
 
+# Helper function to compute the angle between two normalized vectors.
+def angle_between(v1: np.ndarray, v2: np.ndarray) -> float:
+    """
+    Compute the angle between two normalized vectors.
+    
+    Args:
+        v1: First normalized vector
+        v2: Second normalized vector
+        
+    Returns:
+        float: Angle between vectors in radians
+    """
+    dot = np.clip(np.dot(v1, v2), -1.0, 1.0)
+    return np.arccos(dot)
+
 class FaceExtractor:
     """
     Extracts face features and creates face descriptors.
@@ -389,7 +404,10 @@ class FaceExtractor:
                 normal_adj_center = np.array(adj_face.normal(center_uv_adj))
                 if angle_between(normal_face_center, normal_adj_center) < 0.1:
                     # Compute centroid of the shared edge.
-                    vertices = list(edge.ordered_vertices())
+                    try:
+                        vertices = list(edge.ordered_vertices())
+                    except AttributeError:
+                        vertices = [edge.start_vertex(), edge.end_vertex()]
                     if vertices:
                         pts = np.array([v.point() for v in vertices])
                         centroid = np.mean(pts, axis=0)

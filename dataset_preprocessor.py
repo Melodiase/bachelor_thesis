@@ -34,9 +34,9 @@ fh_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
-# Create console handler and set level to info
+# Create console handler but only show warnings and errors
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.WARNING)  # Only show warnings and errors in console
 ch_formatter = logging.Formatter("%(levelname)s: %(message)s")
 ch.setFormatter(ch_formatter)
 logger.addHandler(ch)
@@ -133,8 +133,7 @@ for file_name in tqdm(step_files, desc="STEP files"):
     # Check if graph already exists (resume support)
     out_path = GRAPH_DIR / f"{file_name}.pkl"
     if out_path.exists():
-        logger.info(f"Graph already exists, skipping: {file_name}")
-        continue
+        continue  # Silently skip existing files
 
     try:
         # Load solid from STEP
@@ -208,6 +207,6 @@ for file_name in tqdm(step_files, desc="STEP files"):
 
         logger.info(f"Successfully processed {file_name}")
     except Exception as e:
-        logger.error(f"Error processing {file_name}: {e}")
+        logger.error(f"Error processing {file_name}: {str(e)}")
 
 logger.info("✅ All STEP files processed and converted to graph data.")

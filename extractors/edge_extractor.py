@@ -151,7 +151,7 @@ class EdgeExtractor:
         Returns:
             bool: True if convex, False if concave or smooth.
         """
-        # Get face-center normals
+        # Get face-center normals via face methods
         uv_center1 = face1.uv_bounds().center()
         uv_center2 = face2.uv_bounds().center()
         normal1 = np.array(face1.normal(uv_center1))
@@ -159,8 +159,11 @@ class EdgeExtractor:
         
         # If the normals are nearly parallel, use edge centroid approach
         if angle_between(normal1, normal2) < 0.1:
-            # Compute the centroid of the shared edge
-            vertices = list(edge.ordered_vertices())
+            # Attempt to use ordered_vertices; fall back to start/end vertices if unavailable.
+            try:
+                vertices = list(edge.ordered_vertices())
+            except AttributeError:
+                vertices = [edge.start_vertex(), edge.end_vertex()]
             if vertices:
                 pts = np.array([v.point() for v in vertices])
                 centroid = np.mean(pts, axis=0)
@@ -180,7 +183,7 @@ class EdgeExtractor:
             dot_val = np.dot(cross_prod, tangent)
             return dot_val > 0
         else:
-            # Use occwl's EdgeDataExtractor if available.
+            # Use occwl's EdgeDataExtractor if normals are not nearly parallel.
             edge_extractor = EdgeDataExtractor(edge, [face1, face2])
             convexity = edge_extractor.edge_convexity(angle_tol_rads)
             return convexity == EdgeConvexity.CONVEX
@@ -190,11 +193,8 @@ class EdgeExtractor:
         If two faces are parallel, compute the distance between them.
         
         Enhancement:
-        - Instead of a placeholder, we compute an approximate distance.
-        - We use the centroid of face1 (or its UV center) and project it onto face2
-          along the normal of face1. This is an approximation that works well if the 
-          faces are locally nearly planar. Note: For highly non-planar surfaces, a more 
-          robust method may be required.
+        - Compute an approximate distance by projecting a representative point from face1 onto face2
+          along face1's normal. This works best for nearly planar regions.
         
         Args:
             face1: First face.
@@ -208,10 +208,9 @@ class EdgeExtractor:
         point1 = face1.point(uv_center1)
         normal1 = np.array(face1.normal(uv_center1))
         
-        # Project point1 onto face2 along normal1.
-        # For simplicity, assume that face2.point_to_parameter works reasonably.
-        uv_center2 = face2.point_to_parameter(point1)
-        point2 = face2.point(uv_center2)
+        # Project point1 onto face2 by obtaining the UV coordinates from face2.
+        uv_proj = face2.point_to_parameter(point1)
+        point2 = face2.point(uv_proj)
         
         # The distance along the normal direction is the dot product of the difference and normal.
         diff = np.array(point2) - np.array(point1)
