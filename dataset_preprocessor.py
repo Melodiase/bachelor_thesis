@@ -1,13 +1,13 @@
 import re
 from pathlib import Path
 import pickle
+import logging
 from tqdm import tqdm
 import numpy as np
 from typing import List, Dict, Any, Optional
 
 import torch
 from torch_geometric.data import Data
-
 from occwl.compound import Compound
 from occwl.entity_mapper import EntityMapper
 from feature_extractor import FeatureExtractor
@@ -17,10 +17,32 @@ from descriptors.face_attributes import FaceAttributes
 from descriptors.edge_attributes import EdgeAttributes
 
 # === Config ===
-DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/val")
-VAL_LIST = Path("original_datasets/MFCAD++_dataset/val.txt")
+DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/train")
+VAL_LIST = Path("original_datasets/MFCAD++_dataset/train.txt")
 GRAPH_DIR = Path("graph_data")
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+
+# Set up logging: log both to a file and the console
+LOG_FILE = GRAPH_DIR / "error_log.txt"
+logger = logging.getLogger("dataset_preprocesser")
+logger.setLevel(logging.INFO)
+
+# Create file handler which logs messages to file
+fh = logging.FileHandler(LOG_FILE)
+fh.setLevel(logging.INFO)
+fh_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
+fh.setFormatter(fh_formatter)
+logger.addHandler(fh)
+
+# Create console handler and set level to info
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch_formatter = logging.Formatter("%(levelname)s: %(message)s")
+ch.setFormatter(ch_formatter)
+logger.addHandler(ch)
+
+# Optionally capture warnings from the warnings module
+logging.captureWarnings(True)
 
 # Feature selection configuration
 FACE_FEATURES = {
@@ -65,8 +87,8 @@ def get_feature_indices(attrs_class, feature_config: Dict[str, bool]) -> List[st
 
 
 def attributes_to_tensor(attrs: Dict[str, Any], 
-                        feature_config: Dict[str, bool],
-                        attrs_class) -> torch.Tensor:
+                         feature_config: Dict[str, bool],
+                         attrs_class) -> torch.Tensor:
     """
     Convert attributes dictionary to a tensor of numerical features based on config.
     
@@ -96,159 +118,96 @@ def attributes_to_tensor(attrs: Dict[str, Any],
 with open(VAL_LIST, "r") as f:
     step_files = [line.strip() for line in f if line.strip()]
 
-print("🚀 Starting BRepGAT graph generation...")
-print("\nSelected face features:", get_feature_indices(FaceAttributes, FACE_FEATURES))
-print("Selected edge features:", get_feature_indices(EdgeAttributes, EDGE_FEATURES))
+logger.info("🚀 Starting BRepGAT graph generation...")
+logger.info("\nSelected face features: " + str(get_feature_indices(FaceAttributes, FACE_FEATURES)))
+logger.info("Selected edge features: " + str(get_feature_indices(EdgeAttributes, EDGE_FEATURES)))
 
+# Process each STEP file with error logging and resumability
 for file_name in tqdm(step_files, desc="STEP files"):
     step_path = DATASET_DIR / f"{file_name}.step"
 
     if not step_path.exists():
-        print(f"❌ File not found: {step_path}")
+        logger.warning(f"File not found: {step_path}")
         continue
 
-    # Load solid from STEP
-    compound = Compound.load_from_step(step_path)
-    solids = list(compound.solids())
-    if not solids:
-        print(f"⚠️ No solids found in {file_name}. Skipping...")
-        continue
-    solid = solids[0]
-
-    # === Feature + Label Extraction ===
-    feature_extractor = FeatureExtractor(solid)
-    face_attributes = []
-    step_text = step_path.read_text()
-    labels = extract_feature_labels_from_text(step_text)
-
-    for i, face in enumerate(solid.faces()):
-        attrs = feature_extractor.get_face_descriptor(face)
-        attrs.label = labels[i] if i < len(labels) else 0
-        face_attributes.append(attrs.to_dict())
-
-    # === Edge Attributes ===
-    edge_attributes = {}
-    mapper = EntityMapper(solid)
-
-    for edge in solid.edges():
-        connected_faces = list(solid.faces_from_edge(edge))
-        if len(connected_faces) == 2:
-            f1, f2 = edge.find_left_and_right_faces(connected_faces)
-            if f1 is None or f2 is None:
-                continue
-            i1, i2 = mapper.face_index(f1), mapper.face_index(f2)
-            attrs12 = feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
-            edge_attributes[(i1, i2)] = attrs12
-
-            edge_rev = edge.reversed_edge()
-            attrs21 = feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
-            edge_attributes[(i2, i1)] = attrs21
-
-    # === Build Graph ===
-    graph_nx = brepgat_face_adjacency(
-        solid,
-        feature_extractor,
-        face_attributes=face_attributes,
-        edge_attributes=edge_attributes
-    )
-
-    # === Convert to PyG Data ===
-    pyg_data = from_networkx(graph_nx)
-
-    # Prepare node features (x) and labels (y)
-    pyg_data.x = torch.stack([
-        attributes_to_tensor(d["face_attributes"], FACE_FEATURES, FaceAttributes)
-        for _, d in graph_nx.nodes(data=True)
-    ])
-    pyg_data.y = torch.tensor(
-        [d["face_attributes"]["label"] for _, d in graph_nx.nodes(data=True)],
-        dtype=torch.long
-    )
-
-    # Prepare edge features
-    edge_attrs = torch.stack([
-        attributes_to_tensor(d["edge_attributes"], EDGE_FEATURES, EdgeAttributes)
-        for _, _, d in graph_nx.edges(data=True)
-    ])
-    pyg_data.edge_attr = edge_attrs
-
-    # === Save to graph_data/ ===
+    # Check if graph already exists (resume support)
     out_path = GRAPH_DIR / f"{file_name}.pkl"
-    with open(out_path, "wb") as f:
-        pickle.dump(pyg_data, f)
+    if out_path.exists():
+        logger.info(f"Graph already exists, skipping: {file_name}")
+        continue
 
-print("✅ All STEP files processed and converted to graph data.")
+    try:
+        # Load solid from STEP
+        compound = Compound.load_from_step(step_path)
+        solids = list(compound.solids())
+        if not solids:
+            logger.warning(f"No solids found in {file_name}. Skipping...")
+            continue
+        solid = solids[0]
 
-'''
-import pathlib
-import os
-from occwl.compound import Compound
-from occwl.solid import Solid
-from graph_builder import brepgat_face_adjacency, analyze_graph, visualize_graph
-from feature_extractor import FeatureExtractor
-from extractors.face_extractor import FaceExtractor
-from extractors.edge_extractor import EdgeExtractor
+        # === Feature + Label Extraction ===
+        feature_extractor = FeatureExtractor(solid)
+        face_attributes = []
+        step_text = step_path.read_text()
+        labels = extract_feature_labels_from_text(step_text)
 
+        for i, face in enumerate(solid.faces()):
+            attrs = feature_extractor.get_face_descriptor(face)
+            attrs.label = labels[i] if i < len(labels) else 0
+            face_attributes.append(attrs.to_dict())
 
-if __name__ == "__main__":
-    # --- STEP 1: Create a cube solid (10x10x10) ---
-    cube_solid = Solid.make_box(10, 10, 10)
+        # === Edge Attributes ===
+        edge_attributes = {}
+        mapper = EntityMapper(solid)
 
-    # --- STEP 2: Extract features and build graph ---
-    feature_extractor = FeatureExtractor(cube_solid)
-    face_attributes = []
-    all_faces = list(cube_solid.faces())
-    labels = [24] * len(all_faces) 
+        for edge in solid.edges():
+            connected_faces = list(solid.faces_from_edge(edge))
+            if len(connected_faces) == 2:
+                f1, f2 = edge.find_left_and_right_faces(connected_faces)
+                if f1 is None or f2 is None:
+                    continue
+                i1, i2 = mapper.face_index(f1), mapper.face_index(f2)
+                attrs12 = feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
+                edge_attributes[(i1, i2)] = attrs12
 
-    for i, face in enumerate(all_faces):
-        attrs = feature_extractor.get_face_descriptor(face)
-        attrs.label = labels[i]
-        face_attributes.append(attrs.to_dict())
+                edge_rev = edge.reversed_edge()
+                attrs21 = feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
+                edge_attributes[(i2, i1)] = attrs21
 
-    edge_attributes = {}
-    mapper = EntityMapper(cube_solid)
+        # === Build Graph ===
+        graph_nx = brepgat_face_adjacency(
+            solid,
+            feature_extractor,
+            face_attributes=face_attributes,
+            edge_attributes=edge_attributes
+        )
 
-    for edge in cube_solid.edges():
-        connected_faces = list(cube_solid.faces_from_edge(edge))
-        if len(connected_faces) == 2:
-            f1, f2 = edge.find_left_and_right_faces(connected_faces)
-            if f1 is None or f2 is None:
-                continue
-            i1, i2 = mapper.face_index(f1), mapper.face_index(f2)
-            attrs12 = feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
-            attrs21 = feature_extractor.get_edge_descriptor(edge.reversed_edge(), f2, f1).to_dict()
-            edge_attributes[(i1, i2)] = attrs12
-            edge_attributes[(i2, i1)] = attrs21
+        # === Convert to PyG Data ===
+        pyg_data = from_networkx(graph_nx)
 
-    # --- STEP 3: Build NetworkX Graph ---
-    graph_nx = brepgat_face_adjacency(
-        cube_solid,
-        feature_extractor,
-        face_attributes=face_attributes,
-        edge_attributes=edge_attributes
-    )
+        # Prepare node features (x) and labels (y)
+        pyg_data.x = torch.stack([
+            attributes_to_tensor(d["face_attributes"], FACE_FEATURES, FaceAttributes)
+            for _, d in graph_nx.nodes(data=True)
+        ])
+        pyg_data.y = torch.tensor(
+            [d["face_attributes"]["label"] for _, d in graph_nx.nodes(data=True)],
+            dtype=torch.long
+        )
 
-    # --- STEP 4: Convert to PyG Data ---
-    pyg_data = from_networkx(graph_nx)
+        # Prepare edge features
+        edge_attrs = torch.stack([
+            attributes_to_tensor(d["edge_attributes"], EDGE_FEATURES, EdgeAttributes)
+            for _, _, d in graph_nx.edges(data=True)
+        ])
+        pyg_data.edge_attr = edge_attrs
 
-    pyg_data.x = torch.stack([
-        attributes_to_tensor(d["face_attributes"], FACE_FEATURES, FaceAttributes)
-        for _, d in graph_nx.nodes(data=True)
-    ])
-    pyg_data.y = torch.tensor(
-        [d["face_attributes"]["label"] for _, d in graph_nx.nodes(data=True)],
-        dtype=torch.long
-    )
-    pyg_data.edge_attr = torch.stack([
-        attributes_to_tensor(d["edge_attributes"], EDGE_FEATURES, EdgeAttributes)
-        for _, _, d in graph_nx.edges(data=True)
-    ])
+        # === Save to graph_data/ ===
+        with open(out_path, "wb") as f:
+            pickle.dump(pyg_data, f)
 
-    OUT_FILE = GRAPH_DIR / "test_cube.pkl"
+        logger.info(f"Successfully processed {file_name}")
+    except Exception as e:
+        logger.error(f"Error processing {file_name}: {e}")
 
-    # --- STEP 5: Save to .pkl ---
-    with open(OUT_FILE, "wb") as f:
-        pickle.dump(pyg_data, f)
-
-    print(f"✅ Test cube graph saved to: {OUT_FILE}")
-'''
+logger.info("✅ All STEP files processed and converted to graph data.")
