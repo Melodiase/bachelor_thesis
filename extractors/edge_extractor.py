@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 import numpy as np
 
 from occwl.edge import Edge
@@ -14,6 +14,10 @@ from OCC.Core.TopoDS import topods_Edge
 from OCC.Core.Geom import Geom_TrimmedCurve, Geom_BoundedCurve, Geom_Conic
 from occwl.edge_data_extractor import EdgeDataExtractor
 
+# Helper function to compute the angle between two normalized vectors.
+def angle_between(v1: np.ndarray, v2: np.ndarray) -> float:
+    dot = np.clip(np.dot(v1, v2), -1.0, 1.0)
+    return np.arccos(dot)
 
 class EdgeExtractor:
     """
@@ -30,9 +34,9 @@ class EdgeExtractor:
         self.solid = solid
 
     def get_edge_descriptor(self, edge: Edge, 
-                          face1: Face = None, 
-                          face2: Face = None,
-                          angle_tol_rads: float = 0.1) -> EdgeAttributes:
+                              face1: Face = None, 
+                              face2: Face = None,
+                              angle_tol_rads: float = 0.1) -> EdgeAttributes:
         """
         Create an EdgeDescriptor from an OCCWL Edge.
         
@@ -57,11 +61,11 @@ class EdgeExtractor:
         
         # Check if both faces are provided
         if face1 is not None and face2 is not None:
-            # Determine convexity using EdgeDataExtractor
+            # Determine convexity using enhanced method
             is_convex = self.check_edge_convexity(edge, face1, face2, angle_tol_rads)
             
             # Check for perpendicular and parallel faces
-            # Get normal vectors
+            # Get normal vectors using FaceExtractor
             face_extractor = FaceExtractor(self.solid)
             normal1 = np.array(face_extractor.compute_surface_normal(face1))
             normal2 = np.array(face_extractor.compute_surface_normal(face2))
@@ -72,13 +76,13 @@ class EdgeExtractor:
             # Perpendicular if dot product is close to 0
             is_perp = abs(dot_product) < 1e-3
             
-            # Parallel if dot product is close to 1
+            # Parallel if dot product is close to 1 (allowing for some tolerance)
             is_parallel = abs(dot_product - 1.0) < 1e-4
             
-            # If faces are parallel, compute distance
+            # If faces are parallel, compute distance properly.
             if is_parallel:
                 distance = self.compute_parallel_distance(face1, face2)
-
+    
         # Create and return the EdgeDescriptor
         return EdgeAttributes(
             curve_type=curve_type_id,
@@ -131,8 +135,12 @@ class EdgeExtractor:
 
     def check_edge_convexity(self, edge: Edge, face1: Face, face2: Face, angle_tol_rads: float) -> bool:
         """
-        Creates an EdgeDataExtractor, checks convexity, and returns a boolean.
-        Returns True if the edge is convex, False if concave or smooth.
+        Determines convexity between two adjacent faces.
+        
+        Enhancement:
+        - If the face-center normals (computed at UV-center) are nearly parallel,
+          then recompute normals at the centroid of the shared edge.
+        - Otherwise, use the occwl EdgeDataExtractor as is.
         
         Args:
             edge: The edge to check
@@ -141,38 +149,71 @@ class EdgeExtractor:
             angle_tol_rads: Angle tolerance in radians
             
         Returns:
-            bool: True if convex, False if concave or smooth
+            bool: True if convex, False if concave or smooth.
         """
-        # Create EdgeDataExtractor within this function
-        edge_extractor = EdgeDataExtractor(edge, [face1, face2])
+        # Get face-center normals
+        uv_center1 = face1.uv_bounds().center()
+        uv_center2 = face2.uv_bounds().center()
+        normal1 = np.array(face1.normal(uv_center1))
+        normal2 = np.array(face2.normal(uv_center2))
         
-        # Determine convexity
-        convexity = edge_extractor.edge_convexity(angle_tol_rads)
-
-        # Return True only if convex, False otherwise
-        return convexity == EdgeConvexity.CONVEX
+        # If the normals are nearly parallel, use edge centroid approach
+        if angle_between(normal1, normal2) < 0.1:
+            # Compute the centroid of the shared edge
+            vertices = list(edge.ordered_vertices())
+            if vertices:
+                pts = np.array([v.point() for v in vertices])
+                centroid = np.mean(pts, axis=0)
+                # Reproject centroid to each face
+                uv1 = face1.point_to_parameter(centroid)
+                uv2 = face2.point_to_parameter(centroid)
+                normal1 = np.array(face1.normal(uv1))
+                normal2 = np.array(face2.normal(uv2))
+            # Else, fallback to the face center normals (unlikely case)
+        
+            # Compute a representative tangent (using midpoint of parameter domain)
+            interval = edge.u_bounds()
+            mid_u = (interval.a + interval.b) / 2.0
+            tangent = np.array(edge.tangent(mid_u))
+            # Determine convexity manually
+            cross_prod = np.cross(normal1, normal2)
+            dot_val = np.dot(cross_prod, tangent)
+            return dot_val > 0
+        else:
+            # Use occwl's EdgeDataExtractor if available.
+            edge_extractor = EdgeDataExtractor(edge, [face1, face2])
+            convexity = edge_extractor.edge_convexity(angle_tol_rads)
+            return convexity == EdgeConvexity.CONVEX
 
     def compute_parallel_distance(self, face1: Face, face2: Face) -> float:
         """
-        If two faces are parallel, compute distance between them.
+        If two faces are parallel, compute the distance between them.
+        
+        Enhancement:
+        - Instead of a placeholder, we compute an approximate distance.
+        - We use the centroid of face1 (or its UV center) and project it onto face2
+          along the normal of face1. This is an approximation that works well if the 
+          faces are locally nearly planar. Note: For highly non-planar surfaces, a more 
+          robust method may be required.
         
         Args:
-            face1: First face
-            face2: Second face
+            face1: First face.
+            face2: Second face.
             
         Returns:
-            float: Distance between the parallel faces
+            float: Approximate distance between the parallel faces.
         """
-        # TODO: Implement a proper calculation
-        # In practice, you'd pick a point on face1 and face2 and measure 
-        # the distance along the normal.
+        # Get a representative point from face1 (use its UV center)
+        uv_center1 = face1.uv_bounds().center()
+        point1 = face1.point(uv_center1)
+        normal1 = np.array(face1.normal(uv_center1))
         
-        # Sample implementation: 
-        # 1. Get centroid of face1
-        # 2. Get normal at that point
-        # 3. Project a ray along that normal
-        # 4. Find intersection with face2
-        # 5. Measure distance
+        # Project point1 onto face2 along normal1.
+        # For simplicity, assume that face2.point_to_parameter works reasonably.
+        uv_center2 = face2.point_to_parameter(point1)
+        point2 = face2.point(uv_center2)
         
-        # This is a placeholder - implement proper calculation
-        return 20.0 
+        # The distance along the normal direction is the dot product of the difference and normal.
+        diff = np.array(point2) - np.array(point1)
+        distance = abs(np.dot(diff, normal1))
+        return distance
