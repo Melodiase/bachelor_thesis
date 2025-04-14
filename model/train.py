@@ -6,11 +6,11 @@ import torch.nn.functional as F
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from brepgat_architecture import BRepGAT
 import pickle
-from sklearn.model_selection import train_test_split
 import logging
 import matplotlib.pyplot as plt
 import shutil
 import sys
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
 # === Command line arguments ===
 parser = argparse.ArgumentParser(
@@ -34,6 +34,7 @@ output_dir = os.path.join("experiments", args.exp_name)
 checkpoint_file = os.path.join(output_dir, "checkpoint.pt")
 best_model_file = os.path.join(output_dir, "best_model.pt")
 loss_plot_file = os.path.join(output_dir, "loss_plot.png")
+acc_plot_file = os.path.join(output_dir, "accuracy_plot.png")
 log_file = os.path.join(output_dir, "training.log")
 
 # Determine mode based on --new flag
@@ -65,7 +66,9 @@ logger.addHandler(stream_handler)
 logger.info("Starting training script...")
 
 # === Configuration ===
-data_dir = "/home/ms23911/BachelorThesis/graph_data"
+# Instead of one data_dir, we now use separate directories for official splits.
+train_data_dir = "/home/ms23911/BachelorThesis/graph_data/train"
+val_data_dir   = "/home/ms23911/BachelorThesis/graph_data/val"
 BATCH_SIZE = 64
 EPOCHS = 200
 PATIENCE = 20
@@ -75,27 +78,34 @@ LR = 0.001
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 
-# === Load graph data ===
-def load_graphs():
-    files = glob.glob(os.path.join(data_dir, "*.pkl"))
-    logger.info(f"Found {len(files)} graph files")
+# === Load graph data functions (Modified to use official split folders) ===
+def load_graphs_from_dir(directory: str):
+    files = glob.glob(os.path.join(directory, "*.pkl"))
+    logger.info(f"Found {len(files)} graph files in {directory}")
     data_list = []
     for f in files:
-        with open(f, "rb") as infile:
-            data = pickle.load(infile)
-            data_list.append(data)
-    logger.info(f"Successfully loaded {len(data_list)} graphs")
+        try:
+            with open(f, "rb") as infile:
+                data = pickle.load(infile)
+                data_list.append(data)
+        except Exception as e:
+            logger.error(f"Error loading graph from {f}: {e}")
+    logger.info(f"Successfully loaded {len(data_list)} graphs from {directory}")
     return data_list
 
-logger.info("🔍 Loading graph data...")
-data_list = load_graphs()
-train_data, val_data = train_test_split(data_list, test_size=0.2, random_state=42)
+logger.info("🔍 Loading training graph data...")
+train_data = load_graphs_from_dir(train_data_dir)
+logger.info("🔍 Loading validation graph data...")
+val_data   = load_graphs_from_dir(val_data_dir)
+# (Test data is assumed to be used later for final evaluation; it has no labels)
+
+# Create DataLoaders using the loaded official splits.
 train_loader = PyGDataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = PyGDataLoader(val_data, batch_size=BATCH_SIZE)
+val_loader   = PyGDataLoader(val_data, batch_size=BATCH_SIZE)
 
 # === Initialize model ===
 logger.info("🚀 Initializing model...")
-sample = data_list[0]
+sample = train_data[0]  # using a sample from training data
 model = BRepGAT(
     node_in_dim=sample.x.shape[1],
     edge_in_dim=sample.edge_attr.shape[1],
@@ -129,28 +139,38 @@ def load_checkpoint(filename=checkpoint_file):
 # --- Load checkpoint if exists ---
 start_epoch, best_loss, patience_counter = load_checkpoint()
 
-# Lists for tracking losses
+# Lists for tracking losses and metrics
 train_loss_history = []
 val_loss_history = []
+val_acc_history = []
+val_f1_history = []
 
-# === Validation function ===
-def evaluate():
+# === Evaluation function (No changes to the core logic) ===
+def evaluate(loader):
     model.eval()
+    all_preds, all_labels = [], []
     total_loss = 0
     with torch.no_grad():
-        for batch in val_loader:
+        for batch in loader:
             batch = batch.to(device)
             logits = model(batch)
             loss = F.cross_entropy(logits, batch.y)
             total_loss += loss.item()
-    return total_loss
+            preds = logits.argmax(dim=1).cpu().numpy()
+            labels = batch.y.cpu().numpy()
+            all_preds.extend(preds)
+            all_labels.extend(labels)
+    acc = accuracy_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds, average='weighted')
+    cm = confusion_matrix(all_labels, all_preds)
+    return total_loss, acc, f1, cm
 
-# === Training function ===
+# === Training function (Retaining core logic and adding metric tracking) ===
 def train():
     global best_loss, patience_counter, start_epoch
     for epoch in range(start_epoch + 1, EPOCHS + 1):
         model.train()
-        total_loss = 0
+        total_train_loss = 0
         for batch in train_loader:
             batch = batch.to(device)
             optimizer.zero_grad()
@@ -158,13 +178,17 @@ def train():
             loss = F.cross_entropy(logits, batch.y)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        logger.info(f"Epoch {epoch:03d} | Train Loss: {total_loss:.4f}")
-        train_loss_history.append(total_loss)
+            total_train_loss += loss.item()
+        logger.info(f"Epoch {epoch:03d} | Train Loss: {total_train_loss:.4f}")
+        train_loss_history.append(total_train_loss)
 
-        val_loss = evaluate()
-        logger.info(f"Epoch {epoch:03d} | Validation Loss: {val_loss:.4f}")
+        # Evaluate on validation set
+        val_loss, val_acc, val_f1, val_cm = evaluate(val_loader)
+        logger.info(f"Epoch {epoch:03d} | Validation Loss: {val_loss:.4f} | Accuracy: {val_acc:.4f} | F1: {val_f1:.4f}")
+        logger.debug(f"Confusion Matrix at Epoch {epoch}:\n{val_cm}")
         val_loss_history.append(val_loss)
+        val_acc_history.append(val_acc)
+        val_f1_history.append(val_f1)
 
         # Save best model if improvement is seen
         if val_loss < best_loss:
@@ -182,20 +206,31 @@ def train():
         # Save a checkpoint at the end of each epoch
         save_checkpoint(epoch, best_loss, patience_counter)
 
-    # --- Plot loss curves ---
+    # --- Plot loss and accuracy curves ---
     plt.figure(figsize=(10, 5))
     plt.plot(train_loss_history, label="Train Loss")
     plt.plot(val_loss_history, label="Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.title("Training and Validation Loss over Epochs")
+    plt.title("Training and Validation Loss")
     plt.legend()
     plt.grid(True)
     plt.savefig(loss_plot_file)
     logger.info(f"📈 Loss plot saved as {loss_plot_file}")
-    plt.show()
+    plt.close()
 
-# === Inference function ===
+    plt.figure(figsize=(10, 5))
+    plt.plot(val_acc_history, label="Validation Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.title("Validation Accuracy over Epochs")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(acc_plot_file)
+    logger.info(f"📈 Accuracy plot saved as {acc_plot_file}")
+    plt.close()
+
+# === Inference function (No changes) ===
 def predict(batch):
     model.eval()
     batch = batch.to(device)

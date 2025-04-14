@@ -5,21 +5,24 @@ import logging
 from tqdm import tqdm
 import numpy as np
 from typing import List, Dict, Any, Optional
-
 import torch
 from torch_geometric.data import Data
+from torch_geometric.utils import from_networkx
+from concurrent.futures import ProcessPoolExecutor
+
 from occwl.compound import Compound
 from occwl.entity_mapper import EntityMapper
 from feature_extractor import FeatureExtractor
 from graph_builder import brepgat_face_adjacency 
-from torch_geometric.utils import from_networkx
 from descriptors.face_attributes import FaceAttributes
 from descriptors.edge_attributes import EdgeAttributes
+
+from mappings import LABEL_MERGE_MAP
 
 # === Config ===
 DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/train")
 VAL_LIST = Path("original_datasets/MFCAD++_dataset/train.txt")
-GRAPH_DIR = Path("graph_data")
+GRAPH_DIR = Path("graph_data/train")
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 # Set up logging: log both to a file and the console
@@ -36,15 +39,12 @@ logger.addHandler(fh)
 
 # Create console handler but only show warnings and errors
 ch = logging.StreamHandler()
-ch.setLevel(logging.WARNING)  # Only show warnings and errors in console
+ch.setLevel(logging.WARNING)  # Only warnings and errors in console
 ch_formatter = logging.Formatter("%(levelname)s: %(message)s")
 ch.setFormatter(ch_formatter)
 logger.addHandler(ch)
-
-# Optionally capture warnings from the warnings module
 logging.captureWarnings(True)
 
-# Feature selection configuration
 FACE_FEATURES = {
     "surface_type": True,
     "surface_area": True,
@@ -66,7 +66,7 @@ EDGE_FEATURES = {
 }
 
 
-def extract_feature_labels_from_text(step_content):
+def extract_feature_labels_from_text(step_content: str):
     feature_labels = []
     for line in step_content.splitlines():
         match = re.match(r"#\d+ = ADVANCED_FACE\('(\d+)'", line)
@@ -86,7 +86,7 @@ def get_feature_indices(attrs_class, feature_config: Dict[str, bool]) -> List[st
     return [name for name, enabled in feature_config.items() if enabled]
 
 
-def attributes_to_tensor(attrs: Dict[str, Any], 
+def attributes_to_tensor(attrs: Dict[str, Any],
                          feature_config: Dict[str, bool],
                          attrs_class) -> torch.Tensor:
     """
@@ -107,59 +107,52 @@ def attributes_to_tensor(attrs: Dict[str, Any],
             
         value = attrs[name]
         if isinstance(value, (list, tuple)):
-            features.extend(value)  # Unpack lists (e.g., surface_normal)
+            features.extend(value)
         else:
-            features.append(float(value))  # Convert bools and other types to float
-            
+            features.append(float(value))
     return torch.tensor(features, dtype=torch.float)
 
 
-# === Load STEP filenames ===
-with open(VAL_LIST, "r") as f:
-    step_files = [line.strip() for line in f if line.strip()]
-
-logger.info("🚀 Starting BRepGAT graph generation...")
-logger.info("\nSelected face features: " + str(get_feature_indices(FaceAttributes, FACE_FEATURES)))
-logger.info("Selected edge features: " + str(get_feature_indices(EdgeAttributes, EDGE_FEATURES)))
-
-# Process each STEP file with error logging and resumability
-for file_name in tqdm(step_files, desc="STEP files"):
+def process_file(file_name: str):
+    log_msgs = []
     step_path = DATASET_DIR / f"{file_name}.step"
-
-    if not step_path.exists():
-        logger.warning(f"File not found: {step_path}")
-        continue
-
-    # Check if graph already exists (resume support)
     out_path = GRAPH_DIR / f"{file_name}.pkl"
+    if not step_path.exists():
+        log_msgs.append(f"WARNING: File not found: {step_path}")
+        return log_msgs
+
     if out_path.exists():
-        continue  # Silently skip existing files
+        return log_msgs  # Skip if already processed
 
     try:
-        # Load solid from STEP
         compound = Compound.load_from_step(step_path)
         solids = list(compound.solids())
         if not solids:
-            logger.warning(f"No solids found in {file_name}. Skipping...")
-            continue
+            log_msgs.append(f"WARNING: No solids found in {file_name}. Skipping...")
+            return log_msgs
         solid = solids[0]
 
-        # === Feature + Label Extraction ===
+        # Cache faces() and edges() to avoid redundant OCC wrapping
+        cached_faces = list(solid.faces())
+        cached_edges = list(solid.edges())
+
         feature_extractor = FeatureExtractor(solid)
         face_attributes = []
         step_text = step_path.read_text()
         labels = extract_feature_labels_from_text(step_text)
 
-        for i, face in enumerate(solid.faces()):
+        for i, face in enumerate(cached_faces):
             attrs = feature_extractor.get_face_descriptor(face)
-            attrs.label = labels[i] if i < len(labels) else 0
+            # Default label is 24 ("stock") if not enough labels provided
+            old_label = labels[i] if i < len(labels) else 24
+            new_label = LABEL_MERGE_MAP.get(old_label, old_label)
+            attrs.label = new_label
             face_attributes.append(attrs.to_dict())
 
-        # === Edge Attributes ===
         edge_attributes = {}
         mapper = EntityMapper(solid)
 
-        for edge in solid.edges():
+        for edge in cached_edges:
             connected_faces = list(solid.faces_from_edge(edge))
             if len(connected_faces) == 2:
                 f1, f2 = edge.find_left_and_right_faces(connected_faces)
@@ -173,18 +166,13 @@ for file_name in tqdm(step_files, desc="STEP files"):
                 attrs21 = feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
                 edge_attributes[(i2, i1)] = attrs21
 
-        # === Build Graph ===
         graph_nx = brepgat_face_adjacency(
             solid,
             feature_extractor,
             face_attributes=face_attributes,
             edge_attributes=edge_attributes
         )
-
-        # === Convert to PyG Data ===
         pyg_data = from_networkx(graph_nx)
-
-        # Prepare node features (x) and labels (y)
         pyg_data.x = torch.stack([
             attributes_to_tensor(d["face_attributes"], FACE_FEATURES, FaceAttributes)
             for _, d in graph_nx.nodes(data=True)
@@ -193,20 +181,37 @@ for file_name in tqdm(step_files, desc="STEP files"):
             [d["face_attributes"]["label"] for _, d in graph_nx.nodes(data=True)],
             dtype=torch.long
         )
-
-        # Prepare edge features
         edge_attrs = torch.stack([
             attributes_to_tensor(d["edge_attributes"], EDGE_FEATURES, EdgeAttributes)
             for _, _, d in graph_nx.edges(data=True)
         ])
         pyg_data.edge_attr = edge_attrs
 
-        # === Save to graph_data/ ===
         with open(out_path, "wb") as f:
-            pickle.dump(pyg_data, f)
+            # Use highest pickle protocol for faster and smaller output files
+            pickle.dump(pyg_data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        logger.info(f"Successfully processed {file_name}")
+        log_msgs.append(f"INFO: Successfully processed {file_name}")
     except Exception as e:
-        logger.error(f"Error processing {file_name}: {str(e)}")
+        log_msgs.append(f"ERROR processing {file_name}: {str(e)}")
+    return log_msgs
+
+
+# === Load STEP filenames ===
+with open(VAL_LIST, "r") as f:
+    step_files = [line.strip() for line in f if line.strip()]
+
+logger.info("🚀 Starting BRepGAT graph generation...")
+logger.info("\nSelected face features: " + str(get_feature_indices(FaceAttributes, FACE_FEATURES)))
+logger.info("Selected edge features: " + str(get_feature_indices(EdgeAttributes, EDGE_FEATURES)))
+
+all_logs = []
+with ProcessPoolExecutor(max_workers=12) as executor:
+    for msgs in tqdm(executor.map(process_file, step_files), total=len(step_files), desc="STEP files"):
+        all_logs.extend(msgs)
+
+with open(LOG_FILE, "a") as logf:
+    for msg in all_logs:
+        logf.write(msg + "\n")
 
 logger.info("✅ All STEP files processed and converted to graph data.")
