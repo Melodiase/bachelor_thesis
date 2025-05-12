@@ -53,7 +53,9 @@ FACE_FEATURES = {
     "outer_loop_adj_faces": True,
     "outer_loop_c0_continuity": True,
     "outer_loop_perpendicular": True,
-    "inner_loop": True
+    "inner_loop": True,
+    "sign_gaussian_curvature": True,
+    "mag_gaussian_curvature": True
 }
 
 EDGE_FEATURES = {

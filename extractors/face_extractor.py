@@ -73,6 +73,8 @@ class FaceExtractor:
         
         # Process inner loop properties as per paper:
         inner_loop_info = self.compute_inner_loop_info(face, inner_wires)
+
+        signK, magK = self.compute_gaussian_curvature(face)
         
         return FaceAttributes(
             surface_type=surface_type_id,
@@ -82,7 +84,9 @@ class FaceExtractor:
             outer_loop_adj_faces=outer_loop_adj,
             outer_loop_c0_continuity=outer_loop_c0,
             outer_loop_perpendicular=outer_loop_perp,
-            inner_loop=inner_loop_info
+            inner_loop=inner_loop_info,
+            sign_gaussian_curvature=signK,
+            mag_gaussian_curvature=magK
         )
 
     def identify_outer_and_inner_wires(self, face: Face) -> Tuple[Wire, List[Wire]]:
@@ -452,3 +456,27 @@ class FaceExtractor:
         if total_adjacencies > 0:
             adjacency_bins = [count / total_adjacencies for count in adjacency_bins]
         return adjacency_bins
+
+
+    def compute_gaussian_curvature(self, face: Face) -> Tuple[float,float]:
+        """
+        Sample a 3×3 UV grid, average Gaussian curvature,
+        then return (signK, magK).
+        """
+        # 1) fetch 9 curvature samples
+        k_vals, _ = uvgrid(face,
+                           num_u=3, num_v=3,
+                           method="gaussian_curvature",
+                           uvs=True)
+        k = k_vals.reshape(-1)
+        K_avg = float(k.mean())
+
+        # 2) sign = –1, 0, or +1
+        signK = float(np.sign(K_avg))
+
+        # 3) magnitude: scale‐free via bbox diagonal, clipped to 5
+        bbox = face.box()
+        d = np.linalg.norm(bbox.diagonal())
+        magK = min(abs(K_avg) * (d*d), 5.0)
+
+        return signK, magK

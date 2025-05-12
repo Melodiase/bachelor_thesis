@@ -20,6 +20,8 @@ class FaceAttributes:
     `outer_loop_c0_continuity`: Float[11] (C0 continuity by surface type).
     `outer_loop_perpendicular`: Float[11] (perpendicularity by surface type).
     `inner_loop`: Float[2] ([location, convexity]).
+    `sign_gaussian_curvature`: Float (sign of Gaussian curvature).
+    `mag_gaussian_curvature`: Float (magnitude of Gaussian curvature).
     """
     surface_type_size = len (SURFACE_TYPE_MAPPING)
 
@@ -31,6 +33,9 @@ class FaceAttributes:
     outer_loop_c0_continuity: List[float] = field(default_factory=lambda size=surface_type_size: [0.0] * size)
     outer_loop_perpendicular: List[float] = field(default_factory=lambda size=surface_type_size: [0.0] * size)
     inner_loop: List[float] = field(default_factory=lambda: [0.0, 0.0])
+    # Gaussian curvature signature
+    sign_gaussian_curvature: float = 0.0
+    mag_gaussian_curvature: float = 0.0
     label: Optional[int] = None
 
 
@@ -47,5 +52,7 @@ class FaceAttributes:
             "outer_loop_adj_faces": self.outer_loop_adj_faces,
             "outer_loop_c0_continuity": self.outer_loop_c0_continuity,
             "outer_loop_perpendicular": self.outer_loop_perpendicular,
+            "sign_gaussian_curvature": self.sign_gaussian_curvature,
+            "mag_gaussian_curvature": self.mag_gaussian_curvature,
             "inner_loop": self.inner_loop
         }
