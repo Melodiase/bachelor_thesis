@@ -67,11 +67,11 @@ logger.info("Starting training script...")
 
 # === Configuration ===
 # Instead of one data_dir, we now use separate directories for official splits.
-train_data_dir = "/home/ms23911/BachelorThesis/graph_data/train"
-val_data_dir   = "/home/ms23911/BachelorThesis/graph_data/val"
+train_data_dir = "/home/ms23911/BachelorThesis/graph_data_paperlike/train_18"
+val_data_dir   = "/home/ms23911/BachelorThesis/graph_data_paperlike/val_18"
 BATCH_SIZE = 64
-EPOCHS = 200
-PATIENCE = 20
+EPOCHS = 220
+PATIENCE = 35
 LR = 0.001
 
 # === Device configuration ===
@@ -97,7 +97,6 @@ logger.info("🔍 Loading training graph data...")
 train_data = load_graphs_from_dir(train_data_dir)
 logger.info("🔍 Loading validation graph data...")
 val_data   = load_graphs_from_dir(val_data_dir)
-# (Test data is assumed to be used later for final evaluation; it has no labels)
 
 # Create DataLoaders using the loaded official splits.
 train_loader = PyGDataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -109,11 +108,12 @@ sample = train_data[0]  # using a sample from training data
 model = BRepGAT(
     node_in_dim=sample.x.shape[1],
     edge_in_dim=sample.edge_attr.shape[1],
-    hidden_dim=64,
+    hidden_dim=512,
     num_classes=int(sample.y.max().item()) + 1,
-    dropout=0.5
+    dropout=0.5,
+    heads=8
 ).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
 
 # --- Checkpoint functions ---
 def save_checkpoint(epoch, best_loss, patience_counter, filename=checkpoint_file):

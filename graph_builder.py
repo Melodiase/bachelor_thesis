@@ -4,50 +4,57 @@ import os
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from typing import List, Union, Optional, Dict, Tuple
+
+import numpy as np
 from occwl.entity_mapper import EntityMapper
 from occwl.compound import Compound
 from occwl.solid import Solid
 from occwl.shell import Shell
+
 from mappings import CURVE_TYPE_MAPPING
 
 ShapeType = Union[Shell, Solid, Compound]
 
+
 def brepgat_face_adjacency(
     shape: ShapeType,
     feature_extractor,
-    add_parallel: bool = False,
-    self_loops: bool = False,
+    add_parallel: bool = True,
+    self_loops: bool = True,
     face_attributes: Optional[List[Dict]] = None,
-    edge_attributes: Optional[Dict[Tuple[int, int], Dict]] = None
+    edge_attributes: Optional[Dict[Tuple[int, int], Dict]] = None,
 ) -> nx.DiGraph:
-    """
-    Build a face-level graph storing node and edge descriptors as in BRepGAT.
+    """Build a face‑level graph storing node and edge descriptors as in BRepGAT."""
 
-    Args:
-        shape: OCCWL B-Rep shape (Solid, Shell, or Compound)
-        feature_extractor: FeatureExtractor object
-        add_parallel: Whether to add parallel face edges
-        self_loops: Include seam (loop) edges
-        face_descriptors: Optional list of precomputed face descriptors
-        edge_descriptors: Optional dict {(face_i, face_j): edge_desc_dict}
-
-    Returns:
-        nx.DiGraph with descriptors as node/edge attributes
-    """
     assert isinstance(shape, (Shell, Solid, Compound))
     graph = nx.DiGraph()
     mapper = EntityMapper(shape)
     all_faces = list(shape.faces())
 
+    # --- Nodes ---
     for i, face in enumerate(all_faces):
         face_idx = mapper.face_index(face)
-        attrs = face_attributes[i] if face_attributes else feature_extractor.get_face_descriptor(face).to_dict()
+        attrs = (
+            face_attributes[i]
+            if face_attributes is not None
+            else feature_extractor.get_face_descriptor(face).to_dict()
+        )
         graph.add_node(face_idx, face_attributes=attrs)
 
-    _add_topological_edges_to_graph(graph, shape, mapper, feature_extractor, all_faces, self_loops, edge_attributes)
+    # --- Topological edges ---
+    _add_topological_edges_to_graph(
+        graph,
+        shape,
+        mapper,
+        feature_extractor,
+        all_faces,
+        self_loops,
+        edge_attributes,
+    )
 
+    # --- Parallel‑face synthetic edges ---
     if add_parallel:
-        _add_parallel_edges_to_graph(graph, all_faces, feature_extractor)
+        _add_parallel_edges_to_graph(graph, all_faces, mapper)
 
     return graph
 
@@ -59,7 +66,7 @@ def _add_topological_edges_to_graph(
     feature_extractor,
     all_faces: list,
     self_loops: bool,
-    edge_attributes: Optional[Dict[Tuple[int, int], Dict]]
+    edge_attributes: Optional[Dict[Tuple[int, int], Dict]],
 ):
     added_edges = set()
     for edge in shape.edges():
@@ -75,8 +82,11 @@ def _add_topological_edges_to_graph(
             f = connected_faces[0]
             idx = mapper.face_index(f)
             key = (idx, idx)
-            eattrs = edge_attributes.get(key) if edge_attributes and key in edge_attributes else \
-                feature_extractor.get_edge_descriptor(edge, f, f).to_dict()
+            eattrs = (
+                edge_attributes.get(key)
+                if edge_attributes and key in edge_attributes
+                else feature_extractor.get_edge_descriptor(edge, f, f).to_dict()
+            )
             edge_key = (idx, idx, edge.__hash__())
             if edge_key not in added_edges:
                 graph.add_edge(idx, idx, edge_attributes=eattrs)
@@ -93,8 +103,11 @@ def _add_topological_edges_to_graph(
             k12 = (i1, i2)
             key12 = (i1, i2, edge.__hash__())
             if key12 not in added_edges:
-                eattrs12 = edge_attributes.get(k12) if edge_attributes and k12 in edge_attributes else \
-                    feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
+                eattrs12 = (
+                    edge_attributes.get(k12)
+                    if edge_attributes and k12 in edge_attributes
+                    else feature_extractor.get_edge_descriptor(edge, f1, f2).to_dict()
+                )
                 graph.add_edge(i1, i2, edge_attributes=eattrs12)
                 added_edges.add(key12)
 
@@ -103,29 +116,73 @@ def _add_topological_edges_to_graph(
             k21 = (i2, i1)
             key21 = (i2, i1, edge_rev.__hash__())
             if key21 not in added_edges:
-                eattrs21 = edge_attributes.get(k21) if edge_attributes and k21 in edge_attributes else \
-                    feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
+                eattrs21 = (
+                    edge_attributes.get(k21)
+                    if edge_attributes and k21 in edge_attributes
+                    else feature_extractor.get_edge_descriptor(edge_rev, f2, f1).to_dict()
+                )
                 graph.add_edge(i2, i1, edge_attributes=eattrs21)
                 added_edges.add(key21)
 
         elif len(connected_faces) > 2:
-            print(f"Warning: Non-manifold edge with {len(connected_faces)} faces")
+            print(f"Warning: Non‑manifold edge with {len(connected_faces)} faces")
 
 
-def _add_parallel_edges_to_graph(graph: nx.DiGraph, all_faces: list, feature_extractor):
-    pass  # Optional extension
 
+def _add_parallel_edges_to_graph(
+    graph: nx.DiGraph,
+    all_faces: list,
+    mapper: EntityMapper,
+    tol: float = 1e-3,
+):
+    """
+    Examine every existing edge (u→v).  If the two faces are parallel
+    (|n₁·n₂| ≈ 1) set
+        edge_attributes['parallel'] = True
+        edge_attributes['distance'] = |(p₂ – p₁)·n₁|
+    Otherwise guarantee those keys exist (False, 0.0).
+    Nothing else in the dict is modified; no new edges are added.
+    """
+    if graph.number_of_edges() == 0:
+        return
+
+    # cache face normals & centroids once
+    normals, centers = {}, {}
+    for f in all_faces:
+        idx = mapper.face_index(f)
+        c_uv = f.uv_bounds().center()
+        normals[idx] = np.array(f.normal(c_uv))
+        centers[idx] = np.array(f.point(c_uv))
+
+    for u, v, data in graph.edges(data=True):
+        eattrs = data["edge_attributes"]
+        n1, n2 = normals[u], normals[v]
+        cos = abs(np.dot(n1, n2))
+
+        if 1.0 - cos < tol:                         # parallel
+            dist = float(abs(np.dot(centers[v] - centers[u], n1)))
+            eattrs["parallel"] = True
+            eattrs["distance"] = dist
+        else:
+            # ensure keys exist but leave other info untouched
+            eattrs.setdefault("parallel", False)
+            eattrs.setdefault("distance", 0.0)
+
+
+
+# -----------------------------------------------------------------------------
+# Diagnostics / visualisation helpers (unchanged)
+# -----------------------------------------------------------------------------
 
 def analyze_graph(graph: nx.DiGraph):
     print("\n===== Graph Analysis =====")
     print(f"Nodes: {graph.number_of_nodes()}")
     print(f"Edges: {graph.number_of_edges()}")
 
-    from collections import defaultdict
     edge_types = defaultdict(int)
     for _, _, data in graph.edges(data=True):
-        if 'edge_attributes' in data:
-            etype = data['edge_attributes'].get("curve_type", -1)
+        if "edge_attributes" in data:
+            etype = data["edge_attributes"].get("curve_type", -1)
             edge_types[etype] += 1
 
     if edge_types:
@@ -136,28 +193,20 @@ def analyze_graph(graph: nx.DiGraph):
 
 
 def visualize_graph(graph: nx.DiGraph, graph_name: str = "graph"):
-    """
-    Visualize the BRepGAT graph and save it to the visualizations/ folder.
-
-    Args:
-        graph (nx.DiGraph): The graph to visualize
-        graph_name (str): A name used in the filename (e.g. part ID)
-    """
     vis_dir = Path(__file__).resolve().parent.parent / "visualizations"
     vis_dir.mkdir(parents=True, exist_ok=True)
-
     output_path = vis_dir / f"{graph_name}.png"
 
     plt.figure(figsize=(12, 10))
     pos = nx.spring_layout(graph, seed=42)
 
-    nx.draw_networkx_nodes(graph, pos, node_size=500, node_color='lightblue')
-    nx.draw_networkx_edges(graph, pos, edge_color='gray', arrows=True)
+    nx.draw_networkx_nodes(graph, pos, node_size=500, node_color="lightblue")
+    nx.draw_networkx_edges(graph, pos, edge_color="gray", arrows=True)
     nx.draw_networkx_labels(graph, pos, font_size=10)
 
     plt.title(f"Graph: {graph_name}")
-    plt.axis('off')
+    plt.axis("off")
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"📷 Saved: {output_path}")
     plt.close()

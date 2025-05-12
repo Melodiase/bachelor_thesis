@@ -110,3 +110,23 @@ LABEL_MERGE_MAP = {
     23: 16,  # round
     24: 17   # stock
 }
+
+FACE_FEATURES = {
+    "surface_type": True,
+    "surface_area": True,
+    "surface_normal": True,
+    "bounding_box_ratio": True,
+    "outer_loop_adj_faces": True,
+    "outer_loop_c0_continuity": True,
+    "outer_loop_perpendicular": True,
+    "inner_loop": True
+}
+
+EDGE_FEATURES = {
+    "curve_type": True,
+    "curve_length": True,
+    "convexity": True,
+    "perpendicular": True,
+    "parallel": True,
+    "distance": True
+}

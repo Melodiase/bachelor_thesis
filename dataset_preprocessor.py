@@ -22,7 +22,7 @@ from mappings import LABEL_MERGE_MAP
 # === Config ===
 DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/train")
 VAL_LIST = Path("original_datasets/MFCAD++_dataset/train.txt")
-GRAPH_DIR = Path("graph_data/train")
+GRAPH_DIR = Path("graph_data_loops/train_18")
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 # Set up logging: log both to a file and the console
