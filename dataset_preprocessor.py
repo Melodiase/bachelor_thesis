@@ -20,9 +20,9 @@ from descriptors.edge_attributes import EdgeAttributes
 from mappings import LABEL_MERGE_MAP
 
 # === Config ===
-DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/train")
-VAL_LIST = Path("original_datasets/MFCAD++_dataset/train.txt")
-GRAPH_DIR = Path("graph_data_loops/train_18")
+DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/test")
+VAL_LIST = Path("original_datasets/MFCAD++_dataset/test.txt")
+GRAPH_DIR = Path("graph_data_new_features/test_18")
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 # Set up logging: log both to a file and the console
@@ -55,7 +55,8 @@ FACE_FEATURES = {
     "outer_loop_perpendicular": True,
     "inner_loop": True,
     "sign_gaussian_curvature": True,
-    "mag_gaussian_curvature": True
+    "mag_gaussian_curvature": True,
+    "depth_ratio": True
 }
 
 EDGE_FEATURES = {

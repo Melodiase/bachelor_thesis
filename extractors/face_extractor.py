@@ -6,6 +6,7 @@ from occwl.face import Face
 from occwl.edge import Edge
 from occwl.solid import Solid
 from occwl.wire import Wire
+from occwl.uvgrid import uvgrid
 
 from descriptors.face_attributes import FaceAttributes
 from mappings import SURFACE_TYPE_MAPPING
@@ -17,6 +18,7 @@ from OCC.Core.BRepTools import breptools_UVBounds
 from OCC.Core.GeomAbs import GeomAbs_C0
 from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_FORWARD, TopAbs_INTERNAL, TopAbs_EXTERNAL
 from OCC.Core.BRepTopAdaptor import BRepTopAdaptor_FClass2d
+from OCC.Core.BRepTools import breptools_UVBounds
 from OCC.Core.gp import gp_Pnt2d, gp_Pln
 
 # Helper function to compute the angle between two normalized vectors.
@@ -47,6 +49,8 @@ class FaceExtractor:
             solid: The OCCWL Solid to extract features from
         """
         self.solid = solid
+        # flag so we only compute the bbox once
+        self._bbox_cached = False
 
     def get_face_descriptor(self, face: Face) -> FaceAttributes:
         """
@@ -75,6 +79,8 @@ class FaceExtractor:
         inner_loop_info = self.compute_inner_loop_info(face, inner_wires)
 
         signK, magK = self.compute_gaussian_curvature(face)
+
+        dr = self.compute_depth_ratio(face)
         
         return FaceAttributes(
             surface_type=surface_type_id,
@@ -86,7 +92,8 @@ class FaceExtractor:
             outer_loop_perpendicular=outer_loop_perp,
             inner_loop=inner_loop_info,
             sign_gaussian_curvature=signK,
-            mag_gaussian_curvature=magK
+            mag_gaussian_curvature=magK,
+            depth_ratio=dr
         )
 
     def identify_outer_and_inner_wires(self, face: Face) -> Tuple[Wire, List[Wire]]:
@@ -457,26 +464,96 @@ class FaceExtractor:
             adjacency_bins = [count / total_adjacencies for count in adjacency_bins]
         return adjacency_bins
 
+    def _ensure_bbox(self):
+        if not self._bbox_cached:
+            # get the OCCWL Box geometry
+            bbox_geom = self.solid.box()  # returns occwl.geometry.box.Box
 
-    def compute_gaussian_curvature(self, face: Face) -> Tuple[float,float]:
-        """
-        Sample a 3×3 UV grid, average Gaussian curvature,
-        then return (signK, magK).
-        """
-        # 1) fetch 9 curvature samples
-        k_vals, _ = uvgrid(face,
-                           num_u=3, num_v=3,
-                           method="gaussian_curvature",
-                           uvs=True)
-        k = k_vals.reshape(-1)
-        K_avg = float(k.mean())
+            # extract min & max as numpy arrays
+            min_pt = bbox_geom.min_point()  # np.array([x,y,z])
+            max_pt = bbox_geom.max_point()  # np.array([x,y,z])
 
-        # 2) sign = –1, 0, or +1
+            # z‐range and overall diagonal
+            self._z_top      = float(max_pt[2])
+            self._z_bottom   = float(min_pt[2])
+            self._box_height = self._z_top - self._z_bottom
+            self._bbox_diag  = float(np.linalg.norm(max_pt - min_pt))
+
+            self._bbox_cached = True
+
+    def compute_gaussian_curvature(self, face: Face) -> Tuple[float, float]:
+        """
+        Sample a 3×3 UV grid (inset from the true domain edges), but
+        if too many points fail, gradually reduce the inset until we
+        have at least MIN_SAMPLES valid evaluations.
+        """
+        # required minimum good samples
+        MIN_SAMPLES = 5
+
+        # 1) get UV bounds
+        umin, umax, vmin, vmax = breptools_UVBounds(face.topods_shape())
+
+        # 2) try different inset fractions
+        for inset_frac in (0.1, 0.05, 0.0):
+            du = (umax - umin) * inset_frac
+            dv = (vmax - vmin) * inset_frac
+
+            us = np.linspace(umin + du, umax - du, 3)
+            vs = np.linspace(vmin + dv, vmax - dv, 3)
+
+            k_vals = []
+            for u in us:
+                for v in vs:
+                    try:
+                        k = face.gaussian_curvature((u, v))
+                    except RuntimeError as e:
+                        # skip only the “LProp_NotDefined” singularities
+                        if 'LProp_NotDefined' in str(e):
+                            continue
+                        raise
+                    else:
+                        k_vals.append(k)
+
+            # if we have enough, stop relaxing
+            if len(k_vals) >= MIN_SAMPLES:
+                break
+
+        # 3) compute the average (or zero if nothing worked)
+        if not k_vals:
+            K_avg = 0.0
+        else:
+            K_avg = float(np.mean(k_vals))
+
         signK = float(np.sign(K_avg))
 
-        # 3) magnitude: scale‐free via bbox diagonal, clipped to 5
-        bbox = face.box()
-        d = np.linalg.norm(bbox.diagonal())
-        magK = min(abs(K_avg) * (d*d), 5.0)
+        # 4) scale‐free magnitude, clipping at 5
+        self._ensure_bbox()
+        magK = min(abs(K_avg) * (self._bbox_diag ** 2), 5.0)
 
         return signK, magK
+
+    def compute_depth_ratio(self, face: Face) -> float:
+        """
+        0 at top-most faces, ~1 at the deepest.
+
+        depth_ratio = (z_top - centroid_z) / box_height
+        """
+        # make sure _ensure_bbox() has populated:
+        #   self._z_top, self._z_bottom, self._box_height
+        self._ensure_bbox()
+
+        # sample the “centroid” at the UV‐center
+        uv_center   = face.uv_bounds().center()   # a tuple (u,v)
+        centroid_3d = face.point(uv_center)       # 3D coords [x,y,z]
+
+        # compute vertical distance from the top of the bbox
+        zc   = float(centroid_3d[2])
+        dist = self._z_top - zc
+
+        # guard against a degenerate solid
+        if self._box_height <= 0:
+            return 0.0
+
+        # normalize into [0,1]
+        return float(max(0.0, min(1.0, dist / self._box_height)))
+

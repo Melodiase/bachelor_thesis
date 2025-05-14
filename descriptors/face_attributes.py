@@ -22,6 +22,7 @@ class FaceAttributes:
     `inner_loop`: Float[2] ([location, convexity]).
     `sign_gaussian_curvature`: Float (sign of Gaussian curvature).
     `mag_gaussian_curvature`: Float (magnitude of Gaussian curvature).
+    `depth_ratio`: Float (depth ratio).
     """
     surface_type_size = len (SURFACE_TYPE_MAPPING)
 
@@ -36,6 +37,7 @@ class FaceAttributes:
     # Gaussian curvature signature
     sign_gaussian_curvature: float = 0.0
     mag_gaussian_curvature: float = 0.0
+    depth_ratio: float = 0.0
     label: Optional[int] = None
 
 
@@ -52,7 +54,8 @@ class FaceAttributes:
             "outer_loop_adj_faces": self.outer_loop_adj_faces,
             "outer_loop_c0_continuity": self.outer_loop_c0_continuity,
             "outer_loop_perpendicular": self.outer_loop_perpendicular,
+            "inner_loop": self.inner_loop,
             "sign_gaussian_curvature": self.sign_gaussian_curvature,
             "mag_gaussian_curvature": self.mag_gaussian_curvature,
-            "inner_loop": self.inner_loop
+            "depth_ratio": self.depth_ratio
         }
