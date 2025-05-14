@@ -465,95 +465,107 @@ class FaceExtractor:
         return adjacency_bins
 
     def _ensure_bbox(self):
-        if not self._bbox_cached:
-            # get the OCCWL Box geometry
-            bbox_geom = self.solid.box()  # returns occwl.geometry.box.Box
+        if getattr(self, "_bbox_cached", False):
+            return
 
-            # extract min & max as numpy arrays
-            min_pt = bbox_geom.min_point()  # np.array([x,y,z])
-            max_pt = bbox_geom.max_point()  # np.array([x,y,z])
+        bbox_geom   = self.solid.box()            # occwl.geometry.box.Box
+        self._bbox_min = bbox_geom.min_point()    # np.array([x,y,z])
+        self._bbox_max = bbox_geom.max_point()
+        self._bbox_diag_sq  = float(np.sum((self._bbox_max - self._bbox_min) ** 2))
+        self._bbox_height   = float(abs(self._bbox_max[2] - self._bbox_min[2]))
 
-            # z‐range and overall diagonal
-            self._z_top      = float(max_pt[2])
-            self._z_bottom   = float(min_pt[2])
-            self._box_height = self._z_top - self._z_bottom
-            self._bbox_diag  = float(np.linalg.norm(max_pt - min_pt))
+        self._bbox_cached = True
 
-            self._bbox_cached = True
-
+    # ----------------------------------------------------------------------
+    #  Gaussian curvature signature  (sign ∈ {-1,0,+1},  mag ∈ (0,1] )
+    # ----------------------------------------------------------------------
     def compute_gaussian_curvature(self, face: Face) -> Tuple[float, float]:
         """
-        Sample a 3×3 UV grid (inset from the true domain edges), but
-        if too many points fail, gradually reduce the inset until we
-        have at least MIN_SAMPLES valid evaluations.
+        Return two scale-free scalars per face:
+            signK  :  -1, 0, +1          (convex / developable / saddle)
+            magK   :  tanh(|K̄| · d²)    (0…1, clipped smoothly)
+
+        * Fast analytic shortcut for planes / cylinders / spheres.
+        * 3x3 UV sampling (with progressive inset) for everything else.
+        * Median aggregation is used for robustness.
         """
-        # required minimum good samples
+        # ---------- analytic surfaces first (cheap) ----------
+        stype = face.surface_type()
+        if stype in ("plane", "cylinder", "cone", "extrusion"):
+            return 0.0, 0.0
+        if stype == "sphere":
+            self._ensure_bbox()
+            r     = face.specific_surface().Radius()
+            k_val = 1.0 / (r * r)
+            mag   = np.tanh(k_val * self._bbox_diag_sq)
+            return 1.0, mag  # sphere curvature is always positive
+
+        # ---------- numeric sampling for the rest ----------
+        from OCC.Core.BRepTools import breptools_UVBounds
+        umin, umax, vmin, vmax = breptools_UVBounds(face.topods_shape())
         MIN_SAMPLES = 5
 
-        # 1) get UV bounds
-        umin, umax, vmin, vmax = breptools_UVBounds(face.topods_shape())
-
-        # 2) try different inset fractions
-        for inset_frac in (0.1, 0.05, 0.0):
+        for inset_frac in (0.10, 0.05, 0.0):
             du = (umax - umin) * inset_frac
             dv = (vmax - vmin) * inset_frac
-
             us = np.linspace(umin + du, umax - du, 3)
             vs = np.linspace(vmin + dv, vmax - dv, 3)
-
+            uu, vv = np.meshgrid(us, vs)
             k_vals = []
-            for u in us:
-                for v in vs:
-                    try:
-                        k = face.gaussian_curvature((u, v))
-                    except RuntimeError as e:
-                        # skip only the “LProp_NotDefined” singularities
-                        if 'LProp_NotDefined' in str(e):
-                            continue
-                        raise
-                    else:
-                        k_vals.append(k)
 
-            # if we have enough, stop relaxing
+            for u, v in np.column_stack([uu.ravel(), vv.ravel()]):
+                try:
+                    k_vals.append(face.gaussian_curvature((u, v)))
+                except RuntimeError as e:
+                    if "LProp_NotDefined" in str(e):
+                        continue
+                    raise
+
             if len(k_vals) >= MIN_SAMPLES:
                 break
 
-        # 3) compute the average (or zero if nothing worked)
-        if not k_vals:
-            K_avg = 0.0
-        else:
-            K_avg = float(np.mean(k_vals))
-
+        # robust aggregate
+        K_avg = float(np.median(k_vals)) if k_vals else 0.0
         signK = float(np.sign(K_avg))
 
-        # 4) scale‐free magnitude, clipping at 5
         self._ensure_bbox()
-        magK = min(abs(K_avg) * (self._bbox_diag ** 2), 5.0)
+        magK  = np.tanh(abs(K_avg) * self._bbox_diag_sq)  # 0…1
 
         return signK, magK
 
+    # ----------------------------------------------------------------------
+    #  Depth ratio  (0 at highest exposed faces  →  1 at deepest)
+    # ----------------------------------------------------------------------
     def compute_depth_ratio(self, face: Face) -> float:
         """
-        0 at top-most faces, ~1 at the deepest.
+        Generic depth measure independent of part size and orientation.
 
-        depth_ratio = (z_top - centroid_z) / box_height
+        If a custom reference axis has been set in self._depth_axis
+        (e.g. PCA direction), use it; otherwise fall back to global +Z.
         """
-        # make sure _ensure_bbox() has populated:
-        #   self._z_top, self._z_bottom, self._box_height
         self._ensure_bbox()
 
-        # sample the “centroid” at the UV‐center
-        uv_center   = face.uv_bounds().center()   # a tuple (u,v)
-        centroid_3d = face.point(uv_center)       # 3D coords [x,y,z]
+        # -- centroid via OCC surface properties (handles trims robustly)
+        from OCC.Core.GProp import GProp_GProps
+        from OCC.Core.BRepGProp import brepgprop_SurfaceProperties
 
-        # compute vertical distance from the top of the bbox
-        zc   = float(centroid_3d[2])
-        dist = self._z_top - zc
+        props = GProp_GProps()
+        brepgprop_SurfaceProperties(face.topods_shape(), props)
+        centroid = np.array(props.CentreOfMass().Coord(), dtype=float)
 
-        # guard against a degenerate solid
-        if self._box_height <= 0:
+        # -- choose axis
+        axis_dir = getattr(self, "_depth_axis", np.array([0.0, 0.0, 1.0]))
+        axis_dir = axis_dir / np.linalg.norm(axis_dir)
+
+        # -- project centroid and extremes onto axis
+        d_top    = np.dot(self._bbox_max, axis_dir)
+        d_bottom = np.dot(self._bbox_min, axis_dir)
+        d_face   = np.dot(centroid,      axis_dir)
+
+        denom = d_top - d_bottom
+        if denom <= 1e-9:
             return 0.0
 
-        # normalize into [0,1]
-        return float(max(0.0, min(1.0, dist / self._box_height)))
+        depth_ratio = (d_top - d_face) / denom
+        return float(np.clip(depth_ratio, 0.0, 1.0))
 
