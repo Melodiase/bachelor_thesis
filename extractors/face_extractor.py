@@ -81,6 +81,7 @@ class FaceExtractor:
         signK, magK = self.compute_gaussian_curvature(face)
 
         dr = self.compute_depth_ratio(face)
+        mda = self.compute_mean_dihedral(face)
         
         return FaceAttributes(
             surface_type=surface_type_id,
@@ -568,4 +569,71 @@ class FaceExtractor:
 
         depth_ratio = (d_top - d_face) / denom
         return float(np.clip(depth_ratio, 0.0, 1.0))
+
+    def compute_mean_dihedral(self, face: Face) -> float:
+        """
+        0 → coplanar; ~0.5 → 90°; 1 → 180° folds.
+
+        For the given face, gather its adjacent faces via shared boundary edges,
+        compute the unsigned dihedral angle at each junction, and return
+        the mean angle normalized to [0,1], with special handling so that
+        cylindrical side faces (which only have planar-cap neighbours) yield 0.
+        """
+        import math
+        import numpy as np
+        from mappings import SURFACE_TYPE_MAPPING
+
+        # 1) Compute this face's normal at a robust internal point
+        n0 = np.array(self.compute_surface_normal(face), dtype=float)
+        norm0 = np.linalg.norm(n0)
+        if norm0 < 1e-8:
+            return 0.0
+        n0 /= norm0
+
+        # 2) Gather unique neighbours via each edge of the outer wire
+        root_shape = face.topods_shape()
+        outer_wire, _ = self.identify_outer_and_inner_wires(face)
+
+        neighbours: List[Face] = []
+        for edge in outer_wire.ordered_edges():
+            for nbr in self.solid.faces_from_edge(edge):
+                # skip the face itself
+                if nbr.topods_shape().IsSame(root_shape):
+                    continue
+                # skip duplicates
+                if any(nbr.topods_shape().IsSame(existing.topods_shape())
+                        for existing in neighbours):
+                    continue
+                neighbours.append(nbr)
+
+        # 3) For cylindrical side faces, ignore planar-cap neighbours
+        stype_id = self.classify_surface_type(face)
+        if stype_id == SURFACE_TYPE_MAPPING["cylinder"]:
+            neighbours = [
+                nbr for nbr in neighbours
+                if self.classify_surface_type(nbr) == stype_id
+            ]
+
+        # 4) Compute unsigned dihedral angles ∈ [0, π/2]
+        thetas: List[float] = []
+        for nbr in neighbours:
+            n1 = np.array(self.compute_surface_normal(nbr), dtype=float)
+            norm1 = np.linalg.norm(n1)
+            if norm1 < 1e-8:
+                continue
+            n1 /= norm1
+
+            dot = abs(float(np.dot(n0, n1)))
+            dot = float(np.clip(dot, 0.0, 1.0))
+            thetas.append(math.acos(dot))
+
+        # 5) If no valid neighbours, return 0
+        if not thetas:
+            return 0.0
+
+        # 6) Return mean angle normalized by (π/2)
+        mean_theta = float(sum(thetas) / len(thetas))
+        return min(1.0, mean_theta / (math.pi / 2.0))
+
+
 

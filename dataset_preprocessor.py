@@ -56,7 +56,8 @@ FACE_FEATURES = {
     "inner_loop": True,
     "sign_gaussian_curvature": True,
     "mag_gaussian_curvature": True,
-    "depth_ratio": True
+    "depth_ratio": True,
+    "mean_dihedral_angle": False
 }
 
 EDGE_FEATURES = {

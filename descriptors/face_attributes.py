@@ -38,6 +38,7 @@ class FaceAttributes:
     sign_gaussian_curvature: float = 0.0
     mag_gaussian_curvature: float = 0.0
     depth_ratio: float = 0.0
+    mean_dihedral_angle: float = 0.0
     label: Optional[int] = None
 
 
@@ -57,5 +58,6 @@ class FaceAttributes:
             "inner_loop": self.inner_loop,
             "sign_gaussian_curvature": self.sign_gaussian_curvature,
             "mag_gaussian_curvature": self.mag_gaussian_curvature,
-            "depth_ratio": self.depth_ratio
+            "depth_ratio": self.depth_ratio,
+            "mean_dihedral_angle": self.mean_dihedral_angle
         }
