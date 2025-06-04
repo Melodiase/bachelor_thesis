@@ -67,8 +67,8 @@ logger.info("Starting training script...")
 
 # === Configuration ===
 # Instead of one data_dir, we now use separate directories for official splits.
-train_data_dir = "/home/ms23911/BachelorThesis/graph_data_paperlike/train_18"
-val_data_dir   = "/home/ms23911/BachelorThesis/graph_data_paperlike/val_18"
+train_data_dir = "/home/ms23911/BachelorThesis/graph_data_new_features/depth_ratio/train_18"
+val_data_dir   = "/home/ms23911/BachelorThesis/graph_data_new_features/depth_ratio/val_18"
 BATCH_SIZE = 64
 EPOCHS = 220
 PATIENCE = 35
@@ -105,15 +105,21 @@ val_loader   = PyGDataLoader(val_data, batch_size=BATCH_SIZE)
 # === Initialize model ===
 logger.info("🚀 Initializing model...")
 sample = train_data[0]  # using a sample from training data
+
 model = BRepGAT(
     node_in_dim=sample.x.shape[1],
     edge_in_dim=sample.edge_attr.shape[1],
-    hidden_dim=512,
+    hidden_dim=64,
     num_classes=int(sample.y.max().item()) + 1,
     dropout=0.5,
-    heads=8
+    heads=10
 ).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+logger.info(
+    f"📐 Input feature sizes → node_in_dim={sample.x.shape[1]}, "
+    f"edge_in_dim={sample.edge_attr.shape[1]}, "
+    f"num_classes={int(sample.y.max().item()) + 1}"
+)
 
 # --- Checkpoint functions ---
 def save_checkpoint(epoch, best_loss, patience_counter, filename=checkpoint_file):

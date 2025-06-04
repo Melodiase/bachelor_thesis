@@ -54,9 +54,9 @@ FACE_FEATURES = {
     "outer_loop_c0_continuity": True,
     "outer_loop_perpendicular": True,
     "inner_loop": True,
-    "sign_gaussian_curvature": True,
-    "mag_gaussian_curvature": True,
-    "depth_ratio": True,
+    "sign_gaussian_curvature": False,
+    "mag_gaussian_curvature": False,
+    "depth_ratio": False,
     "mean_dihedral_angle": False
 }
 
