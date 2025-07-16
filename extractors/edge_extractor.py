@@ -12,6 +12,7 @@ from extractors.face_extractor import FaceExtractor
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.TopoDS import topods_Edge
 from OCC.Core.Geom import Geom_TrimmedCurve, Geom_BoundedCurve, Geom_Conic
+from OCC.Core.GeomAbs import GeomAbs_C0
 from occwl.edge_data_extractor import EdgeDataExtractor
 
 # Helper function to compute the angle between two normalized vectors.
@@ -58,6 +59,7 @@ class EdgeExtractor:
         is_perp = False
         is_parallel = False
         distance = 0.0
+        continuity_flag = 0  # 0 = sharp (C0), 1 = smooth (C1+)
         
         # Check if both faces are provided
         if face1 is not None and face2 is not None:
@@ -82,6 +84,10 @@ class EdgeExtractor:
             # If faces are parallel, compute distance properly.
             if is_parallel:
                 distance = self.compute_parallel_distance(face1, face2)
+
+            # Compute continuity_flag: C0→0, C1+→1
+            cont = edge.continuity(face1, face2)
+            continuity_flag = 0 if cont == GeomAbs_C0 else 1
     
         # Create and return the EdgeDescriptor
         return EdgeAttributes(
@@ -90,7 +96,8 @@ class EdgeExtractor:
             convexity=is_convex,
             perpendicular=is_perp,
             parallel=is_parallel,
-            distance=distance
+            distance=distance,
+            continuity_flag=continuity_flag
         )
 
     def classify_curve_type(self, edge: Edge) -> int:

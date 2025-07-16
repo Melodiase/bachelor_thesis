@@ -19,6 +19,7 @@ from descriptors.edge_attributes import EdgeAttributes
 
 from mappings import LABEL_MERGE_MAP
 
+
 # === Config ===
 DATASET_DIR = Path("original_datasets/MFCAD++_dataset/step/test")
 VAL_LIST = Path("original_datasets/MFCAD++_dataset/test.txt")
@@ -57,7 +58,8 @@ FACE_FEATURES = {
     "sign_gaussian_curvature": False,
     "mag_gaussian_curvature": False,
     "depth_ratio": False,
-    "mean_dihedral_angle": False
+    "mean_dihedral_angle": False,
+    "chamfer_angle_norm": False
 }
 
 EDGE_FEATURES = {
@@ -66,7 +68,8 @@ EDGE_FEATURES = {
     "convexity": True,
     "perpendicular": True,
     "parallel": True,
-    "distance": True
+    "distance": True,
+    "continuity_flag": False
 }
 
 
@@ -76,7 +79,7 @@ def extract_feature_labels_from_text(step_content: str):
         match = re.match(r"#\d+ = ADVANCED_FACE\('(\d+)'", line)
         if match:
             try:
-                label = int(match.group(1))
+                label = int(match.group(1))   
             except ValueError:
                 label = 0
             feature_labels.append(label)

@@ -120,10 +120,11 @@ FACE_FEATURES = {
     "outer_loop_c0_continuity": True,
     "outer_loop_perpendicular": True,
     "inner_loop": True,
-    "sign_gaussian_curvature": True,
-    "mag_gaussian_curvature": True,
+    "sign_gaussian_curvature": False,
+    "mag_gaussian_curvature": False,
     "depth_ratio": False,
-    "mean_dihedral": False
+    "mean_dihedral_angle": False,
+    "chamfer_angle_norm": False
 }
 
 EDGE_FEATURES = {
@@ -132,5 +133,7 @@ EDGE_FEATURES = {
     "convexity": True,
     "perpendicular": True,
     "parallel": True,
-    "distance": True
+    "distance": True,
+    "continuity_flag": False
 }
+ 

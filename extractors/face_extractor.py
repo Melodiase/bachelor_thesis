@@ -16,6 +16,7 @@ from OCC.Core.TopoDS import topods_Face, topods_Wire
 from OCC.Core.Geom import Geom_RectangularTrimmedSurface
 from OCC.Core.BRepTools import breptools_UVBounds
 from OCC.Core.GeomAbs import GeomAbs_C0
+from math import acos, degrees
 from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_FORWARD, TopAbs_INTERNAL, TopAbs_EXTERNAL
 from OCC.Core.BRepTopAdaptor import BRepTopAdaptor_FClass2d
 from OCC.Core.BRepTools import breptools_UVBounds
@@ -82,6 +83,7 @@ class FaceExtractor:
 
         dr = self.compute_depth_ratio(face)
         mda = self.compute_mean_dihedral(face)
+        cham= self.compute_chamfer_angle_norm(face)
         
         return FaceAttributes(
             surface_type=surface_type_id,
@@ -94,7 +96,9 @@ class FaceExtractor:
             inner_loop=inner_loop_info,
             sign_gaussian_curvature=signK,
             mag_gaussian_curvature=magK,
-            depth_ratio=dr
+            depth_ratio=dr,
+            mean_dihedral_angle=mda,
+            chamfer_angle_norm = cham
         )
 
     def identify_outer_and_inner_wires(self, face: Face) -> Tuple[Wire, List[Wire]]:
@@ -636,4 +640,93 @@ class FaceExtractor:
         return min(1.0, mean_theta / (math.pi / 2.0))
 
 
+    def compute_chamfer_angle_norm(
+        self,
+        face: Face,
+        stock_area_threshold: float = 1e6,
+        consistency_tol_deg: float = 3.0
+    ) -> float:
+        """
+        Return a scalar in [0, 1] that encodes the chamfer angle of a
+        planar face, or 0 if the face is not a consistent chamfer.
 
+        * 0          → pocket floor / stock plane
+        * ≈0.50      → 45° chamfer
+        * 1          → vertical wall (90°)
+
+        """
+        # -------------------------------------------------- 1. Planarity
+        if face.surface_type() != "plane":
+            return 0.0
+
+        # -------------------------------------------------- 2. Skip stock
+        if face.area() > stock_area_threshold:
+            return 0.0
+
+        # -------------------------------------------------- 3. Find sharp C0 edges
+        angles = []
+        outer_wire, _ = self.identify_outer_and_inner_wires(face)
+
+        for edge in outer_wire.ordered_edges():
+            # adjacent faces
+            nbrs = list(self.solid.faces_from_edge(edge))
+            if len(nbrs) != 2:
+                continue
+
+            # keep only truly sharp (C0) edges
+            if edge.continuity(nbrs[0], nbrs[1]) != GeomAbs_C0:
+                continue
+
+            # determine "other" face
+            other = nbrs[1] if nbrs[0].topods_shape().IsSame(face.topods_shape()) else nbrs[0]
+
+            # Get 3D midpoint of the edge using OCCWL API
+            u_interval = edge.u_bounds()
+            if u_interval.invalid():
+                continue
+            mid_u = u_interval.middle()
+            p3d = edge.point(mid_u)
+
+            # Get UV coordinates for the 3D point on each face
+            try:
+                uv_face = face.point_to_parameter(p3d)
+                uv_other = other.point_to_parameter(p3d)
+            except:
+                # If projection fails, skip this edge
+                continue
+
+            # Get outward normals using correct OCCWL API
+            try:
+                n0 = np.asarray(face.normal(uv_face), dtype=float)
+                n1 = np.asarray(other.normal(uv_other), dtype=float)
+            except:
+                # If normal computation fails, skip this edge
+                continue
+
+            # Ensure normals are valid
+            if np.linalg.norm(n0) < 1e-8 or np.linalg.norm(n1) < 1e-8:
+                continue
+
+            # Normalize normals
+            n0 = n0 / np.linalg.norm(n0)
+            n1 = n1 / np.linalg.norm(n1)
+
+            # Compute unsigned dihedral angle (0–90 deg)
+            cos_theta = abs(np.dot(n0, n1))
+            cos_theta = max(-1.0, min(1.0, cos_theta))       # robust clamp
+            theta_deg = degrees(acos(cos_theta))
+            if theta_deg > 90.0:
+                theta_deg = 180.0 - theta_deg
+            angles.append(theta_deg)
+
+        # -------------------------------------------------- 4. No sharp edges
+        if not angles:
+            return 0.0
+
+        # -------------------------------------------------- 5. Consistency check
+        if max(angles) - min(angles) > consistency_tol_deg:
+            return 0.0
+
+        # -------------------------------------------------- 6. Normalize mean angle
+        mean_angle = float(sum(angles) / len(angles))        # degrees
+        return min(1.0, mean_angle / 90.0)

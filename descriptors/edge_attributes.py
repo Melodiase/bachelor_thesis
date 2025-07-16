@@ -23,6 +23,7 @@ class EdgeAttributes:
     perpendicular: bool
     parallel: bool
     distance: float = 0.0
+    continuity_flag: int = 0  # 0=sharp C0, 1=smooth C1+
 
     def to_dict(self) -> dict:
         return {
@@ -31,5 +32,6 @@ class EdgeAttributes:
             "convexity": self.convexity,
             "perpendicular": self.perpendicular,
             "parallel": self.parallel,
-            "distance": self.distance
+            "distance": self.distance,
+            "continuity_flag": self.continuity_flag,
         }

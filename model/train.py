@@ -67,8 +67,8 @@ logger.info("Starting training script...")
 
 # === Configuration ===
 # Instead of one data_dir, we now use separate directories for official splits.
-train_data_dir = "/home/ms23911/BachelorThesis/graph_data_new_features/depth_ratio/train_18"
-val_data_dir   = "/home/ms23911/BachelorThesis/graph_data_new_features/depth_ratio/val_18"
+train_data_dir = "/home/ms23911/BachelorThesis/graph_data_new_features/all_new/train_18"
+val_data_dir   = "/home/ms23911/BachelorThesis/graph_data_new_features/all_new/val_18"
 BATCH_SIZE = 64
 EPOCHS = 220
 PATIENCE = 35
